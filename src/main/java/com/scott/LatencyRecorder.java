@@ -1,7 +1,6 @@
 package com.scott;
 
-import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -9,15 +8,44 @@ import java.util.List;
  * percentile statistics (p50, p90, p95, p99) for queue wait time,
  * execution time, and end-to-end latency.
  *
- * <p>All data is kept in memory using standard Java collections.
- * Call {@link #record(Task)} for each completed task, then
- * {@link #summary()} to get a formatted report.
+ * <p>Latency samples are stored in primitive {@code long} buffers
+ * ({@link LongBuffer}) to avoid {@link Long} boxing and excessive
+ * temporary object allocation.  This reduces young-generation GC
+ * pressure and minimises measurement interference during benchmark
+ * experiments.
+ *
+ * <p>Percentile computation is performed <em>after</em> all tasks have
+ * completed — it is an offline analysis step, not part of the critical
+ * path.  Call {@link #record(Task)} (or {@link #recordAll(List)}) for
+ * each completed task, then {@link #summary()} to get a formatted report.
  */
 public final class LatencyRecorder {
 
-    private final List<Long> queueWaitNanos  = new ArrayList<>();
-    private final List<Long> executionNanos  = new ArrayList<>();
-    private final List<Long> endToEndNanos   = new ArrayList<>();
+    private final LongBuffer queueWaitNanos;
+    private final LongBuffer executionNanos;
+    private final LongBuffer endToEndNanos;
+
+    /**
+     * Creates a recorder with a default initial capacity (1024).
+     * Suitable for ad-hoc runs; for formal benchmarks prefer
+     * {@link #LatencyRecorder(int)} with the exact task count.
+     */
+    public LatencyRecorder() {
+        this(1024);
+    }
+
+    /**
+     * Creates a recorder pre-sized for {@code expectedTasks} samples.
+     * When the exact task count is known up front this avoids any
+     * runtime buffer growth, eliminating allocation on the recording path.
+     *
+     * @param expectedTasks anticipated number of tasks to record
+     */
+    public LatencyRecorder(int expectedTasks) {
+        this.queueWaitNanos = new LongBuffer(expectedTasks);
+        this.executionNanos = new LongBuffer(expectedTasks);
+        this.endToEndNanos  = new LongBuffer(expectedTasks);
+    }
 
     /* ================================================================
      *  Recording
@@ -25,6 +53,7 @@ public final class LatencyRecorder {
 
     /**
      * Records the latency data from a single completed task.
+     * Only primitive {@code long} values are stored — no boxing occurs.
      *
      * @param task a task whose {@link Task#run()} has already finished
      */
@@ -98,23 +127,24 @@ public final class LatencyRecorder {
      * ================================================================ */
 
     /**
-     * Computes the p-th percentile from an unsorted list of nanosecond values
-     * using the nearest-rank method.
+     * Computes the p-th percentile from a {@link LongBuffer} of nanosecond
+     * samples using the nearest-rank method.  Operates entirely on a
+     * primitive {@code long[]} copy — no boxing involved.
      *
      * @param data       raw nanosecond samples
      * @param percentile the desired percentile (0–100)
      * @return the percentile value in nanoseconds
      */
-    private static double percentile(List<Long> data, int percentile) {
+    private static double percentile(LongBuffer data, int percentile) {
         if (data.isEmpty()) return 0.0;
 
-        var sorted = new ArrayList<>(data);
-        Collections.sort(sorted);
+        long[] sorted = data.toArray();
+        Arrays.sort(sorted);
 
         // nearest-rank: index = ceil(percentile / 100 * N) - 1, clamped
-        int index = (int) Math.ceil(percentile / 100.0 * sorted.size()) - 1;
-        index = Math.clamp(index, 0, sorted.size() - 1);
-        return sorted.get(index);
+        int index = (int) Math.ceil(percentile / 100.0 * sorted.length) - 1;
+        index = Math.max(0, Math.min(index, sorted.length - 1));
+        return sorted[index];
     }
 
     private static String formatRow(String label, double p50, double p90, double p95, double p99) {

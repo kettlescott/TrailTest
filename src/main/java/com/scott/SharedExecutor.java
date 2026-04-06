@@ -65,12 +65,19 @@ public final class SharedExecutor {
      * Convenience overload: builds a {@link Task} from an id and workload,
      * stamps the submit time, and submits it.
      *
+     * <p>A single-element {@link TaskTimingStore} is created internally.
+     * For benchmark runs prefer the {@link #submit(Task)} method with a
+     * pre-allocated shared store.
+     *
      * @param taskId   unique task identifier
      * @param workload the workload to execute
      * @return the newly created {@link Task}
      */
     public Task submit(long taskId, Workload workload) {
-        Task task = new Task(taskId, System.nanoTime(), workload);
+        TaskTimingStore store = new TaskTimingStore(1);
+        long submitTime = System.nanoTime();
+        store.recordSubmit(0, submitTime);
+        Task task = new Task(taskId, 0, workload, store);
         return submit(task);
     }
 

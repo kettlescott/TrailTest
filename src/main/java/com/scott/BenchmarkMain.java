@@ -43,11 +43,15 @@ public class BenchmarkMain {
 
         // ---- 4. Build & submit tasks ----
         System.out.println("=== Submitting tasks ===");
+        TaskTimingStore timingStore = new TaskTimingStore(TASK_COUNT);
         List<Task> tasks = new ArrayList<>(TASK_COUNT);
 
         for (int i = 0; i < TASK_COUNT; i++) {
             Workload workload = new CpuBoundWorkload(SEED + i, iterations);
-            Task task = new Task(i, System.nanoTime(), workload, latch);
+            long submitTime = System.nanoTime();
+            timingStore.recordSubmit(i, submitTime);
+
+            Task task = new Task(i, i, workload, timingStore, latch);
             dispatcher.submit(task);
             tasks.add(task);
         }
@@ -61,7 +65,7 @@ public class BenchmarkMain {
         }
 
         // ---- 6. Record latencies ----
-        LatencyRecorder recorder = new LatencyRecorder();
+        LatencyRecorder recorder = new LatencyRecorder(TASK_COUNT);
         recorder.recordAll(tasks);
 
         // ---- 7. Print results ----
