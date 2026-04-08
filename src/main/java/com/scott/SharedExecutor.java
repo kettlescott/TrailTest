@@ -1,9 +1,9 @@
 package com.scott;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -25,11 +25,16 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>Collected tasks are available through {@link #getTasks()} for latency analysis.</li>
  * </ul>
  */
-public final class SharedExecutor {
+public final class SharedExecutor implements BenchmarkExecutor {
 
     private final ThreadPoolExecutor executor;
     private final BlockingQueue<Runnable> workQueue;
-    private final List<Task> taskList = new CopyOnWriteArrayList<>();
+
+    // ArrayList is sufficient: only the submitting thread calls submit(), and
+    // getTasks() is read after all submissions complete.  CopyOnWriteArrayList
+    // would copy the entire backing array on every add(), producing O(N²) GC
+    // pressure in sustained benchmarks.
+    private final List<Task> taskList = new ArrayList<>();
 
     /**
      * Creates the shared executor.
@@ -53,12 +58,11 @@ public final class SharedExecutor {
      * Submits a pre-built {@link Task} for execution.
      *
      * @param task the benchmark task (submit timestamp should already be set)
-     * @return the same {@link Task} instance for further inspection after completion
      */
-    public Task submit(Task task) {
+    @Override
+    public void submit(Task task) {
         taskList.add(task);
         executor.execute(task);
-        return task;
     }
 
     /**
@@ -73,12 +77,13 @@ public final class SharedExecutor {
      * @param workload the workload to execute
      * @return the newly created {@link Task}
      */
-    public Task submit(long taskId, Workload workload) {
+    public Task submitNew(long taskId, Workload workload) {
         TaskTimingStore store = new TaskTimingStore(1);
         long submitTime = System.nanoTime();
         store.recordSubmit(0, submitTime);
         Task task = new Task(taskId, 0, workload, store);
-        return submit(task);
+        submit(task);
+        return task;
     }
 
     /* ---- observation ---- */
@@ -136,4 +141,3 @@ public final class SharedExecutor {
         }
     }
 }
-

@@ -1,7 +1,6 @@
 package com.scott;
 
 import java.util.Arrays;
-import java.util.List;
 
 /**
  * Collects latency data from completed {@link Task} objects and computes
@@ -16,7 +15,7 @@ import java.util.List;
  *
  * <p>Percentile computation is performed <em>after</em> all tasks have
  * completed — it is an offline analysis step, not part of the critical
- * path.  Call {@link #record(Task)} (or {@link #recordAll(List)}) for
+ * path.  Call {@link #record(Task)}  for
  * each completed task, then {@link #summary()} to get a formatted report.
  */
 public final class LatencyRecorder {
@@ -66,10 +65,15 @@ public final class LatencyRecorder {
     /**
      * Records latency data from every task in the list.
      */
-    public void recordAll(List<Task> tasks) {
+    public void recordAll(Task[] tasks) {
         for (Task t : tasks) {
             record(t);
         }
+    }
+
+    /** Returns the number of tasks recorded so far. */
+    public int recordedTasks() {
+        return queueWaitNanos.size();
     }
 
     /* ================================================================
