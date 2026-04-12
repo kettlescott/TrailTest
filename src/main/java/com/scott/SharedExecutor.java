@@ -30,11 +30,23 @@ public final class SharedExecutor implements BenchmarkExecutor {
     private final ThreadPoolExecutor executor;
     private final BlockingQueue<Runnable> workQueue;
 
-    // ArrayList is sufficient: only the submitting thread calls submit(), and
-    // getTasks() is read after all submissions complete.  CopyOnWriteArrayList
-    // would copy the entire backing array on every add(), producing O(N²) GC
-    // pressure in sustained benchmarks.
-    private final List<Task> taskList = new ArrayList<>();
+    // ---- task tracking (DEBUG-only) ----
+    // When BenchmarkFlags.DEBUG is true, every submitted Task reference is
+    // stored for diagnostic use via getTasks().  When false (default), the
+    // list is null and submit() performs zero list mutations — no array
+    // growth, no element copies, no GC pressure on the hot path.
+    private final ArrayList<Task> taskList;
+
+    // Simple counters — only the (single) submitting thread writes these,
+    // so plain int is safe.  Read after shutdown.
+    private int totalSubmitCount;
+
+    /**
+     * Number of measurement-phase tasks submitted.  Only the submitting
+     * thread writes this (single-threaded submit model), so no
+     * synchronization is needed.
+     */
+    private int measurementSubmitCount;
 
     /**
      * Creates the shared executor.
@@ -43,6 +55,7 @@ public final class SharedExecutor implements BenchmarkExecutor {
      */
     public SharedExecutor(int poolSize) {
         this.workQueue = new LinkedBlockingQueue<>();
+        this.taskList  = BenchmarkFlags.DEBUG ? new ArrayList<>() : null;
         this.executor = new ThreadPoolExecutor(
                 poolSize,                       // corePoolSize  (fixed)
                 poolSize,                       // maximumPoolSize (fixed)
@@ -57,11 +70,24 @@ public final class SharedExecutor implements BenchmarkExecutor {
     /**
      * Submits a pre-built {@link Task} for execution.
      *
+     * <h3>Hot-path design</h3>
+     * <p>When {@link BenchmarkFlags#DEBUG} is {@code false} (default),
+     * submit performs only: two int increments + executor.execute().
+     * No list mutation, no object allocation beyond what the TPE does
+     * internally.  When DEBUG is {@code true}, the task is also recorded
+     * in an internal list for {@link #getTasks()}.
+     *
      * @param task the benchmark task (submit timestamp should already be set)
      */
     @Override
     public void submit(Task task) {
-        taskList.add(task);
+        if (BenchmarkFlags.DEBUG && taskList != null) {
+            taskList.add(task);
+        }
+        totalSubmitCount++;
+        if (task.isMeasurement()) {
+            measurementSubmitCount++;
+        }
         executor.execute(task);
     }
 
@@ -98,8 +124,12 @@ public final class SharedExecutor implements BenchmarkExecutor {
 
     /**
      * Returns an unmodifiable view of all submitted {@link Task}s.
+     *
+     * <p>Only populated when {@link BenchmarkFlags#DEBUG} is {@code true}.
+     * Returns an empty list when task tracking is disabled (default).
      */
     public List<Task> getTasks() {
+        if (taskList == null) return Collections.emptyList();
         return Collections.unmodifiableList(taskList);
     }
 
@@ -108,6 +138,36 @@ public final class SharedExecutor implements BenchmarkExecutor {
      */
     public int getPoolSize() {
         return executor.getCorePoolSize();
+    }
+
+    /**
+     * Returns the number of measurement-phase tasks submitted.
+     */
+    public int getMeasurementSubmitCount() {
+        return measurementSubmitCount;
+    }
+
+    /**
+     * Prints a task distribution summary to stdout.
+     *
+     * <p>Since all workers share a single queue there is no per-worker
+     * breakdown.  Reports total and measurement-only counts for parity
+     * with {@link ShardedExecutor#printQueueDistribution()}.
+     *
+     * <p>Call after {@link #shutdown()} and
+     * {@link #awaitTermination(long, TimeUnit)} to get final counts.
+     */
+    public void printQueueDistribution() {
+        long completed = executor.getCompletedTaskCount();
+        int  poolSize  = executor.getCorePoolSize();
+
+        System.out.println();
+        System.out.println("=== Queue Task Distribution (SharedExecutor) ===");
+        System.out.printf("  queue topology         : 1 shared queue, %d workers%n", poolSize);
+        System.out.printf("  submitted (all phases) : %,d%n", totalSubmitCount);
+        System.out.printf("  submitted (measurement): %,d%n", measurementSubmitCount);
+        System.out.printf("  completed (all phases) : %,d%n", completed);
+        System.out.printf("  remaining queue        : %d%n", workQueue.size());
     }
 
     /* ---- lifecycle ---- */

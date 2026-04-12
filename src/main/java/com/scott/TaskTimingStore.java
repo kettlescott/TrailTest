@@ -39,18 +39,31 @@ public final class TaskTimingStore {
 
     /* ---- writers (called on the hot path) ---- */
 
+    /**
+     * Records submit timestamp.  Called by the main (submitting) thread,
+     * not by workers, so the bounds check is always performed.
+     */
     public void recordSubmit(int taskIndex, long submitTimeNanos) {
         checkIndex(taskIndex);
         submitTimesNanos[taskIndex] = submitTimeNanos;
     }
 
+    /**
+     * Records start timestamp.  Called by worker threads on the hot path.
+     * Bounds check is only performed when {@link BenchmarkFlags#DEBUG}
+     * is {@code true}; otherwise this is a single array write.
+     */
     public void recordStart(int taskIndex, long startTimeNanos) {
-        checkIndex(taskIndex);
+        if (BenchmarkFlags.DEBUG) checkIndex(taskIndex);
         startTimesNanos[taskIndex] = startTimeNanos;
     }
 
+    /**
+     * Records finish timestamp.  Called by worker threads on the hot path.
+     * Same DEBUG gating as {@link #recordStart}.
+     */
     public void recordFinish(int taskIndex, long finishTimeNanos) {
-        checkIndex(taskIndex);
+        if (BenchmarkFlags.DEBUG) checkIndex(taskIndex);
         finishTimesNanos[taskIndex] = finishTimeNanos;
     }
 

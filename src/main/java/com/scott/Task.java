@@ -19,12 +19,21 @@ import java.util.concurrent.CountDownLatch;
  *
  * <h3>Memory-visibility contract</h3>
  * <p>Timing data is written to a shared {@link TaskTimingStore} by the worker
- * thread and read by the main thread <em>after</em> {@code completionLatch.await()}
- * returns.  {@link CountDownLatch#countDown()} happens-before
- * {@link CountDownLatch#await()}, so all stores performed before
- * {@code countDown()} are visible to the awaiting thread.
- * Therefore no {@code volatile} is needed on any timing field or on
- * {@code workloadResult}.</p>
+ * thread and read by the main thread <em>after</em> all in-flight tasks have
+ * completed (either via {@code completionLatch.await()} or Semaphore drain).
+ * The synchronization action (latch countDown or Semaphore release)
+ * establishes a happens-before relationship, so no {@code volatile} is needed
+ * on any timing field or on {@code workloadResult}.</p>
+ *
+ * <h3>Completion signaling</h3>
+ * <p>Two optional completion mechanisms are supported:
+ * <ul>
+ *   <li>{@link CountDownLatch} — for per-batch closed-loop submission</li>
+ *   <li>{@link Runnable} callback ({@code onComplete}) — for open-loop
+ *       submission with Semaphore-gated backpressure</li>
+ * </ul>
+ * Both may be {@code null}; both are invoked in the {@code finally} block
+ * of {@link #run()} so they fire even on workload failure.</p>
  *
  * <h3>Design rationale</h3>
  * <p>Timestamps are stored in pre-allocated {@code long[]} arrays inside
@@ -42,13 +51,23 @@ public final class Task implements Runnable {
     private final Workload         workload;
     private final TaskTimingStore  timingStore;
     private final CountDownLatch   completionLatch;   // nullable
+    private final Runnable         onComplete;        // nullable — open-loop callback
+
+    /**
+     * Benchmark phase flag.  {@code true} if this task belongs to the
+     * measurement window; {@code false} for warmup.  Set once at
+     * construction and never changed.  Workers use this to maintain
+     * separate measurement-only counters so that per-queue distribution
+     * and latency recording are consistent.
+     */
+    private final boolean measurement;
 
     /* ---- recorded during run() — no volatile needed (see class doc) ---- */
 
     private long workloadResult;
 
     /**
-     * Full constructor.
+     * Master constructor — accepts both latch and callback.
      *
      * @param taskId          logical identifier (may differ from {@code taskIndex})
      * @param taskIndex       index into the {@code timingStore} arrays
@@ -56,24 +75,59 @@ public final class Task implements Runnable {
      * @param timingStore     shared store where submit/start/finish times are recorded
      * @param completionLatch optional latch counted down when the task finishes
      *                        ({@code null} if not needed)
+     * @param onComplete      optional callback invoked when the task finishes
+     *                        ({@code null} if not needed) — typically releases
+     *                        a {@link java.util.concurrent.Semaphore} permit
+     * @param measurement     {@code true} if this task is part of the measurement phase
      */
     public Task(long taskId,
                 int taskIndex,
                 Workload workload,
                 TaskTimingStore timingStore,
-                CountDownLatch completionLatch) {
+                CountDownLatch completionLatch,
+                Runnable onComplete,
+                boolean measurement) {
         this.taskId          = taskId;
         this.taskIndex       = taskIndex;
         this.workload        = workload;
         this.timingStore     = timingStore;
         this.completionLatch = completionLatch;
+        this.onComplete      = onComplete;
+        this.measurement     = measurement;
     }
 
     /**
-     * Convenience constructor without a latch.
+     * Latch-based constructor (backward compatible — closed-loop batches).
+     */
+    public Task(long taskId,
+                int taskIndex,
+                Workload workload,
+                TaskTimingStore timingStore,
+                CountDownLatch completionLatch,
+                boolean measurement) {
+        this(taskId, taskIndex, workload, timingStore, completionLatch, null, measurement);
+    }
+
+    /**
+     * Callback-based constructor (open-loop submission).
+     *
+     * <p>Typically used with a {@link java.util.concurrent.Semaphore}:
+     * {@code new Task(id, idx, w, store, permits::release, true)}.
+     */
+    public Task(long taskId,
+                int taskIndex,
+                Workload workload,
+                TaskTimingStore timingStore,
+                Runnable onComplete,
+                boolean measurement) {
+        this(taskId, taskIndex, workload, timingStore, null, onComplete, measurement);
+    }
+
+    /**
+     * Convenience constructor without a latch or callback (defaults to non-measurement).
      */
     public Task(long taskId, int taskIndex, Workload workload, TaskTimingStore timingStore) {
-        this(taskId, taskIndex, workload, timingStore, null);
+        this(taskId, taskIndex, workload, timingStore, null, null, false);
     }
 
     /* ================================================================
@@ -82,9 +136,11 @@ public final class Task implements Runnable {
 
     /**
      * Records start time, executes the workload, records finish time.
-     * The {@link CountDownLatch} (if present) is counted down in the
-     * {@code finally} block so the latch is released even on failure,
-     * and the happens-before edge is established for all preceding stores.
+     *
+     * <p>Both the {@link CountDownLatch} (if present) and the
+     * {@code onComplete} callback (if present) are invoked in the
+     * {@code finally} block so they fire even on failure and establish
+     * the necessary happens-before edges for all preceding stores.
      */
     @Override
     public void run() {
@@ -95,6 +151,9 @@ public final class Task implements Runnable {
             timingStore.recordFinish(taskIndex, System.nanoTime());
             if (completionLatch != null) {
                 completionLatch.countDown();
+            }
+            if (onComplete != null) {
+                onComplete.run();
             }
         }
     }
@@ -127,6 +186,7 @@ public final class Task implements Runnable {
     public long             taskId()           { return taskId; }
     public int              taskIndex()        { return taskIndex; }
     public long             workloadResult()   { return workloadResult; }
+    public boolean          isMeasurement()    { return measurement; }
     public Workload         getWorkload()      { return workload; }
     public CountDownLatch   getCompletionLatch() { return completionLatch; }
 
@@ -164,4 +224,3 @@ public final class Task implements Runnable {
         );
     }
 }
-

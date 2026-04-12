@@ -1,286 +1,688 @@
 package com.scott;
 
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
 /**
- * GC-aware, sustained benchmark that runs both {@link SharedExecutor}
- * and {@link ShardedExecutor} back-to-back with identical configuration,
- * then prints a side-by-side latency comparison.
+ * Open-loop benchmark harness for {@link SharedExecutor} and {@link ShardedExecutor}.
  *
- * <h3>Execution model</h3>
+ * <h3>Submission model</h3>
+ * <p>Uses a <em>continuous open-loop producer</em> with backpressure:
+ * <ul>
+ *   <li>A single producer thread submits tasks for a fixed duration.</li>
+ *   <li>For {@link SharedExecutor}: a global {@link Semaphore} with
+ *       {@code maxInflight} permits bounds the in-flight count.  Any worker
+ *       completion frees a permit, and the next task goes into the single
+ *       shared queue.</li>
+ *   <li>For {@link ShardedExecutor}: a <b>per-shard ready-channel</b>
+ *       replaces the global Semaphore.  When a shard completes a task it
+ *       returns its shard ID to the channel; the producer takes the next
+ *       ready shard ID and routes the next task there.  This eliminates the
+ *       <em>routing–completion mismatch</em> that would otherwise cause
+ *       artificial head-of-line blocking and inflated tail latency (see
+ *       {@link #runOpenLoopPhaseShardAware}).</li>
+ * </ul>
+ *
+ * <h3>Execution modes</h3>
+ * <p>Controlled via the {@code --mode} command-line argument:
+ * <ul>
+ *   <li>{@code --mode=prepare} — calibrate once, print a fixed
+ *       {@link BenchmarkConfig} block, then exit (no executor started)</li>
+ *   <li>{@code --mode=shared}  — run only {@link SharedExecutor}</li>
+ *   <li>{@code --mode=sharded} — run only {@link ShardedExecutor}</li>
+ *   <li>{@code --mode=compare} — run both sequentially and print a
+ *       side-by-side comparison (default, preserves legacy behaviour)</li>
+ * </ul>
+ *
+ * <h3>Reproducible cross-JVM workloads</h3>
+ * <p>Running each executor in a <em>separate JVM process</em> produces the
+ * cleanest JFR recordings.  To guarantee that both processes use the
+ * <em>exact same</em> workload:
  * <ol>
- *   <li><b>Calibrate</b> — determine iteration count for ~4 ms task service time,
- *       then verify by timing a single task execution.</li>
- *   <li><b>SharedExecutor run</b> — warmup + measurement with a single shared queue.</li>
- *   <li><b>ShardedExecutor run</b> — warmup + measurement with per-worker queues.</li>
- *   <li><b>Comparison</b> — side-by-side p50/p90/p95/p99 table.</li>
+ *   <li>Run {@code --mode=prepare} to calibrate and print a fixed config.</li>
+ *   <li>Pass the printed values as CLI arguments to subsequent
+ *       {@code --mode=shared} and {@code --mode=sharded} runs.</li>
  * </ol>
  *
- * <h3>Controlled-load design</h3>
- * <p>Each batch submits {@code BATCH_SIZE} (= workerCount × 2) tasks, then
- * awaits their completion via a per-batch {@link CountDownLatch} before
- * starting the next batch.  This bounds the maximum in-flight task count to
- * {@code BATCH_SIZE}, preventing queue buildup while keeping workers busy.</p>
+ * <h3>Example</h3>
+ * <pre>
+ *   # Step 1 — calibrate once:
+ *   java --enable-preview -cp target/classes com.scott.BenchmarkMain --mode=prepare
  *
- * <h3>Fairness</h3>
- * <p>Both executors receive the same worker count, batch size, workload
- * calibration, seed sequence, warmup duration, and measurement duration.
- * The <em>only</em> variable is the queue topology.  Each executor gets its
- * own warmup phase so JIT and GC state are settled independently.
- * For publication-grade results, run each executor in a separate JVM or
- * alternate the execution order across trials.</p>
+ *   # Step 2 — run each executor with the SAME fixed config:
+ *   java --enable-preview -cp target/classes com.scott.BenchmarkMain \
+ *        --mode=shared --iterations=180472 --warmupSeconds=10 \
+ *        --measurementSeconds=30 --seed=3735928559
  *
- * <h3>GC awareness</h3>
- * <ul>
- *   <li>{@link TaskTimingStore} and {@code Task[]} are pre-allocated once
- *       per executor run and reused across every batch.</li>
- *   <li>{@link LatencyRecorder} is pre-sized to avoid runtime growth.</li>
- *   <li>Per-task objects ({@link Task}, {@link CpuBoundWorkload}) are freshly
- *       created each batch — allocation rate is bounded by the controlled load.</li>
- * </ul>
+ *   java --enable-preview -cp target/classes com.scott.BenchmarkMain \
+ *        --mode=sharded --iterations=180472 --warmupSeconds=10 \
+ *        --measurementSeconds=30 --seed=3735928559
+ * </pre>
  */
 public class BenchmarkMain {
 
-    /* ---- tunables ---- */
+    /* ---- defaults (used when no CLI overrides are provided) ---- */
 
-    private static final int  WORKER_COUNT         = Runtime.getRuntime().availableProcessors();
-    private static final int  BATCH_SIZE           = WORKER_COUNT * 2;
-    private static final long SEED                 = 0xDEADBEEFL;
-    private static final long TARGET_TASK_NANOS    = 4_000_000L;        // ~4 ms per task
-    private static final long WARMUP_SECONDS       = 10;
-    private static final long MEASUREMENT_SECONDS  = 30;
-    private static final int  SHARD_QUEUE_CAPACITY = 256;
+    private static final long DEFAULT_SEED              = 0xDEADBEEFL;
+    private static final long DEFAULT_TARGET_TASK_NANOS = 100_000L;     // ~100 μs per task
+    private static final int  DEFAULT_WARMUP_SECONDS    = 3;
+    private static final int  DEFAULT_MEASURE_SECONDS   = 10;
 
     /** Minimum recorded tasks for meaningful percentile analysis. */
-    private static final int  MIN_USEFUL_SAMPLES   = 100;
+    private static final int  MIN_USEFUL_SAMPLES = 100;
+
+    /**
+     * Seed offset applied to measurement-phase tasks so warmup and
+     * measurement use non-overlapping seed ranges.
+     */
+    private static final long MEASUREMENT_SEED_OFFSET = 1_000_000_000L;
+
+    /* ---- active config (set once at the start of main) ---- */
+
+    private static BenchmarkConfig config;
+
+    /* ---- phase result record ---- */
+
+    /**
+     * Captures the outcome of a single benchmark phase (warmup or measurement).
+     */
+    private record PhaseResult(Task[] tasks, int submitted, TaskTimingStore store,
+                               long elapsedNanos, int backpressureEvents) {}
 
     public static void main(String[] args) throws Exception {
 
-        // ---- 1. Calibrate workload (shared by both executors) ----
-        System.out.println("=== Calibrating workload ===");
-        int iterations = WorkloadCalibrator.calibrateIterations(TARGET_TASK_NANOS, SEED);
-        System.out.printf("  Calibrated    : %,d iterations%n", iterations);
+        // ---- 0. Parse mode ----
+        BenchmarkMode mode = BenchmarkMode.fromArgs(args);
 
-        // Verify calibration by timing a single task execution
-        long verifyStart = System.nanoTime();
-        long verifyResult = new CpuBoundWorkload(SEED, iterations).execute();
-        long verifyNanos = System.nanoTime() - verifyStart;
-        // consume result so JIT cannot eliminate the work
-        if (verifyResult == Long.MIN_VALUE) System.out.print("");
-        System.out.printf("  Verified      : %.3f ms  (target %.1f ms)%n",
-                verifyNanos / 1_000_000.0, TARGET_TASK_NANOS / 1_000_000.0);
+        // ---- 1. Resolve config (fixed from CLI or calibrated dynamically) ----
+        String configSource = resolveConfig(args);
 
-        if (verifyNanos > 10 * TARGET_TASK_NANOS) {
-            System.err.printf("  *** WARNING: verified task is %.1fx slower than target!%n",
-                    (double) verifyNanos / TARGET_TASK_NANOS);
-            System.err.println("  *** Calibration may be inaccurate — expect very few batches.");
-        }
-        if (verifyNanos > 0 && verifyNanos < TARGET_TASK_NANOS / 10) {
-            System.err.printf("  *** WARNING: verified task is %.1fx faster than target!%n",
-                    (double) TARGET_TASK_NANOS / verifyNanos);
-        }
-
+        // ---- 2. Print configuration ----
         System.out.println();
         System.out.println("=== Benchmark Configuration ===");
-        System.out.printf("  Workers        : %d%n", WORKER_COUNT);
-        System.out.printf("  Batch size     : %d%n", BATCH_SIZE);
-        System.out.printf("  Warmup         : %d s%n", WARMUP_SECONDS);
-        System.out.printf("  Measurement    : %d s%n", MEASUREMENT_SECONDS);
-        System.out.printf("  Queue capacity : %d (sharded)%n", SHARD_QUEUE_CAPACITY);
-
-        double estBatchMs = (double) BATCH_SIZE / WORKER_COUNT * verifyNanos / 1_000_000.0;
-        long estBatches   = (long) (MEASUREMENT_SECONDS * 1000.0 / estBatchMs);
-        long estTasks     = estBatches * BATCH_SIZE;
-        System.out.printf("  Est. batch time: %.1f ms  →  ~%,d batches  →  ~%,d tasks in %ds%n%n",
-                estBatchMs, estBatches, estTasks, MEASUREMENT_SECONDS);
-
-        // ---- 2. SharedExecutor run ----
-        System.out.println("========================================");
-        System.out.println("  SharedExecutor (single shared queue)");
-        System.out.println("========================================");
-        LatencyRecorder sharedRecorder;
-        {
-            SharedExecutor executor = new SharedExecutor(WORKER_COUNT);
-            sharedRecorder = runBenchmark(executor, iterations, "SharedExecutor");
-            executor.shutdown();
-            executor.awaitTermination(30, TimeUnit.SECONDS);
-        }
+        System.out.printf("  Config source     : %s%n", configSource);
+        System.out.printf("  Mode              : %s%n", mode);
+        System.out.printf("  Workers           : %d%n", config.workerCount());
+        System.out.printf("  Max in-flight     : %d%n", config.maxInflight());
+        System.out.printf("  Seed              : %d%n", config.seed());
+        System.out.printf("  Iterations        : %,d%n", config.iterations());
+        System.out.printf("  Warmup            : %d s%n", config.warmupSeconds());
+        System.out.printf("  Measurement       : %d s%n", config.measurementSeconds());
+        System.out.printf("  Task target       : %.1f ms%n", config.targetTaskNanos() / 1_000_000.0);
+        System.out.printf("  Submission model  : open-loop (Semaphore-gated, %d permits)%n",
+                config.maxInflight());
+        System.out.printf("  Debug mode        : %s%n",
+                BenchmarkFlags.DEBUG ? "ON (-Dbenchmark.debug=true)" : "OFF (hot-path minimal)");
         System.out.println();
 
-        // ---- 3. ShardedExecutor run ----
-        System.out.println("========================================");
-        System.out.println("  ShardedExecutor (per-worker queue)");
-        System.out.println("========================================");
-        LatencyRecorder shardedRecorder;
-        {
-            ShardedExecutor executor = new ShardedExecutor(WORKER_COUNT, SHARD_QUEUE_CAPACITY);
-            shardedRecorder = runBenchmark(executor, iterations, "ShardedExecutor");
-            executor.shutdown();
-            executor.awaitTermination(30, TimeUnit.SECONDS);
+        // ---- 3. Handle PREPARE mode (print fixed config and exit) ----
+        if (mode == BenchmarkMode.PREPARE) {
+            System.out.println("=== Fixed Config (machine-readable) ===");
+            System.out.println(config.toFixedConfigBlock());
+            System.out.println();
+            System.out.println("=== Paste into shared/sharded commands ===");
+            System.out.println("  java --enable-preview -cp target/classes com.scott.BenchmarkMain \\");
+            System.out.printf("       --mode=shared  %s%n", config.toCliArgs());
+            System.out.println();
+            System.out.println("  java --enable-preview -cp target/classes com.scott.BenchmarkMain \\");
+            System.out.printf("       --mode=sharded %s%n", config.toCliArgs());
+            return;
         }
-        System.out.println();
 
-        // ---- 4. Side-by-side comparison ----
-        printComparison(sharedRecorder, shardedRecorder);
+        // ---- 4. Run selected executor(s) ----
+        switch (mode) {
+            case SHARED -> {
+                runSharedBenchmark();
+            }
+            case SHARDED -> {
+                runShardedBenchmark();
+            }
+            case COMPARE -> {
+                LatencyRecorder sharedRecorder  = runSharedBenchmark();
+                System.out.println();
+                LatencyRecorder shardedRecorder = runShardedBenchmark();
+                System.out.println();
+                printComparison(sharedRecorder, shardedRecorder);
+            }
+            default -> { /* PREPARE already handled above */ }
+        }
     }
 
     /* ================================================================
-     *  Per-executor benchmark (warmup + measurement + summary)
+     *  Config resolution — fixed CLI args or dynamic calibration
      * ================================================================ */
 
-    private static LatencyRecorder runBenchmark(BenchmarkExecutor executor,
-                                                int iterations,
-                                                String label) throws InterruptedException {
+    /**
+     * Populates the static {@link #config} field and returns a label
+     * describing the config source ({@code "FIXED"} or {@code "CALIBRATED"}).
+     */
+    private static String resolveConfig(String[] args) {
 
-        TaskTimingStore batchStore = new TaskTimingStore(BATCH_SIZE);
-        Task[] batchTasks = new Task[BATCH_SIZE];
-
-        // -- warmup --
-        System.out.printf("  Warmup (%d s)...%n", WARMUP_SECONDS);
-        long[] warmupCounts = runPhase(executor, iterations, WARMUP_SECONDS,
-                batchStore, batchTasks, null);
-        System.out.printf("  Warmup done    : batches=%,d  submitted=%,d  completed=%,d%n",
-                warmupCounts[0], warmupCounts[1], warmupCounts[1]);
-
-        // -- measurement --
-        int estimated = estimateTaskCount(MEASUREMENT_SECONDS);
-        LatencyRecorder recorder = new LatencyRecorder(estimated);
-
-        System.out.printf("  Measurement (%d s)...%n", MEASUREMENT_SECONDS);
-        long[] measureCounts = runPhase(executor, iterations, MEASUREMENT_SECONDS,
-                batchStore, batchTasks, recorder);
-        int recorded = recorder.recordedTasks();
-        System.out.printf("  Measurement done: batches=%,d  submitted=%,d  completed=%,d  recorded=%,d%n",
-                measureCounts[0], measureCounts[1], measureCounts[1], recorded);
-
-        // -- verification: recorded must equal submitted --
-        if (recorded != measureCounts[1]) {
-            System.err.printf("  *** ERROR: recorded (%d) != submitted (%d) — tasks were lost!%n",
-                    recorded, measureCounts[1]);
+        // -- attempt fixed config from CLI --
+        BenchmarkConfig fixed = BenchmarkConfig.fromArgs(args, DEFAULT_SEED, DEFAULT_TARGET_TASK_NANOS);
+        if (fixed != null) {
+            config = fixed;
+            return "FIXED (from command-line arguments)";
         }
 
-        // -- warn if too few for percentile analysis --
-        if (recorded < MIN_USEFUL_SAMPLES) {
-            System.err.printf("  *** WARNING: only %d tasks recorded — too few for percentile analysis.%n",
-                    recorded);
-            System.err.printf("               Each batch of %d tasks may be taking too long.%n", BATCH_SIZE);
-            System.err.printf("               Try reducing iterations or increasing measurement duration.%n");
+        // -- dynamic calibration --
+        System.out.println("=== Calibrating workload ===");
+        int iterations = WorkloadCalibrator.calibrateIterations(DEFAULT_TARGET_TASK_NANOS, DEFAULT_SEED);
+        System.out.printf("  Calibrated    : %,d iterations%n", iterations);
+
+        // Verify calibration by timing a single task execution
+        long verifyStart  = System.nanoTime();
+        long verifyResult = new CpuBoundWorkload(DEFAULT_SEED, iterations).execute();
+        long verifyNanos  = System.nanoTime() - verifyStart;
+        // consume result so JIT cannot eliminate the work
+        if (verifyResult == Long.MIN_VALUE) System.out.print("");
+        System.out.printf("  Verified      : %.3f ms  (target %.1f ms)%n",
+                verifyNanos / 1_000_000.0, DEFAULT_TARGET_TASK_NANOS / 1_000_000.0);
+
+        if (verifyNanos > 10 * DEFAULT_TARGET_TASK_NANOS) {
+            System.err.printf("  *** WARNING: verified task is %.1fx slower than target!%n",
+                    (double) verifyNanos / DEFAULT_TARGET_TASK_NANOS);
+            System.err.println("  *** Calibration may be inaccurate.");
+        }
+        if (verifyNanos > 0 && verifyNanos < DEFAULT_TARGET_TASK_NANOS / 10) {
+            System.err.printf("  *** WARNING: verified task is %.1fx faster than target!%n",
+                    (double) DEFAULT_TARGET_TASK_NANOS / verifyNanos);
         }
 
-        System.out.printf("  --- %s Latency Summary ---%n", label);
-        System.out.println(recorder.summary());
+        // Parse optional worker/maxInflight overrides
+        Integer wcArg = BenchmarkConfig.parseIntArg(args, "--workerCount");
+        int workerCount = wcArg != null ? wcArg : Runtime.getRuntime().availableProcessors();
+
+        Integer miArg = BenchmarkConfig.parseIntArg(args, "--maxInflight");
+        int maxInflight = miArg != null ? miArg : workerCount * 2;
+
+        config = new BenchmarkConfig(workerCount, maxInflight, DEFAULT_SEED,
+                iterations, DEFAULT_WARMUP_SECONDS, DEFAULT_MEASURE_SECONDS,
+                DEFAULT_TARGET_TASK_NANOS);
+
+        return "CALIBRATED (dynamic)";
+    }
+
+    /* ================================================================
+     *  Standalone executor runs
+     * ================================================================ */
+
+    /**
+     * Runs the full benchmark (warmup + measurement + reporting) using
+     * only {@link SharedExecutor}.  Suitable for standalone JFR recording.
+     */
+    private static LatencyRecorder runSharedBenchmark() throws InterruptedException {
+
+        System.out.println("========================================");
+        System.out.println("  SharedExecutor (single shared queue)");
+        System.out.println("========================================");
+
+        SharedExecutor executor = new SharedExecutor(config.workerCount());
+        LatencyRecorder recorder = runOpenLoopBenchmark(executor, "SharedExecutor");
+
+        executor.shutdown();
+        executor.awaitTermination(30, TimeUnit.SECONDS);
+        executor.printQueueDistribution();
+
+        printExecutorConsistency("SharedExecutor",
+                executor.getMeasurementSubmitCount(),
+                recorder.recordedTasks());
+
+        return recorder;
+    }
+
+    /**
+     * Runs the full benchmark (warmup + measurement + reporting) using
+     * only {@link ShardedExecutor}.  Suitable for standalone JFR recording.
+     */
+    private static LatencyRecorder runShardedBenchmark() throws InterruptedException {
+
+        System.out.println("========================================");
+        System.out.println("  ShardedExecutor (per-worker queue)");
+        System.out.println("========================================");
+
+        ShardedExecutor executor = new ShardedExecutor(config.workerCount());
+        LatencyRecorder recorder = runOpenLoopBenchmark(executor, "ShardedExecutor");
+
+        executor.shutdown();
+        executor.awaitTermination(30, TimeUnit.SECONDS);
+        executor.printQueueDistribution();
+
+        long[] measCounts = executor.getMeasurementProcessedCounts();
+        long perQueueTotal = 0;
+        for (long c : measCounts) perQueueTotal += c;
+        printExecutorConsistency("ShardedExecutor",
+                perQueueTotal,
+                recorder.recordedTasks());
+
         return recorder;
     }
 
     /* ================================================================
-     *  Phase runner — drives repeated batches for a fixed duration
+     *  Open-loop benchmark — warmup + measurement + reporting
      * ================================================================ */
 
     /**
-     * Submits and completes small batches for {@code durationSeconds}.
+     * Runs the complete open-loop benchmark: warmup phase, then measurement
+     * phase, then records and reports latencies.
      *
-     * <p>Each batch is fully completed (latch awaited) before the next one
-     * starts, so in-flight task count never exceeds {@code BATCH_SIZE}.
-     * The {@code batchStore} and {@code batchTasks} arrays are reused
-     * across batches — contents are overwritten each batch and consumed
-     * (recorded) before the next overwrite.
-     *
-     * @param recorder if non-null, completed tasks are recorded
-     *                 (measurement); {@code null} discards results (warmup)
-     * @return {@code long[2]}: [0] = batches completed, [1] = total tasks
+     * <p>Both phases submit tasks continuously with backpressure.
+     * For {@link SharedExecutor} a global {@link Semaphore} is used;
+     * for {@link ShardedExecutor} a per-shard ready-channel is used
+     * to avoid routing–completion mismatch.
      */
-    private static long[] runPhase(BenchmarkExecutor executor,
-                                   int iterations,
-                                   long durationSeconds,
-                                   TaskTimingStore batchStore,
-                                   Task[] batchTasks,
-                                   LatencyRecorder recorder) throws InterruptedException {
+    private static LatencyRecorder runOpenLoopBenchmark(
+            BenchmarkExecutor executor, String label) throws InterruptedException {
 
-        long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(durationSeconds);
-        long totalTasks = 0;
-        long batchCount = 0;
+        // ---- measure actual task time for accurate capacity estimation ----
+        long actualTaskNanos = measureActualTaskNanos();
+        System.out.printf("  Actual task time : %.3f ms  (used for capacity estimation)%n",
+                actualTaskNanos / 1_000_000.0);
 
-        while (System.nanoTime() < deadlineNanos) {
-            runOneBatch(executor, iterations, batchStore, batchTasks,
-                    totalTasks, recorder);
-            totalTasks += BATCH_SIZE;
-            batchCount++;
+        boolean shardAware = executor instanceof ShardedExecutor;
+        if (shardAware) {
+            System.out.printf("  Backpressure     : per-shard ready-channel (1 slot/shard × %d shards = %d total)%n",
+                    config.workerCount(), config.workerCount());
+        } else {
+            System.out.printf("  Backpressure     : global Semaphore (%d permits)%n", config.maxInflight());
         }
 
-        return new long[]{ batchCount, totalTasks };
+        // ---- warmup phase ----
+        long warmupNanos = config.warmupSeconds() * 1_000_000_000L;
+        System.out.printf("  Warmup (%d s, open-loop)...%n", config.warmupSeconds());
+
+        PhaseResult warmup = runOpenLoopPhase(executor, warmupNanos, false, 0L, actualTaskNanos);
+
+        System.out.printf("  Warmup done    : %,d tasks in %.3f s%n",
+                warmup.submitted, warmup.elapsedNanos / 1_000_000_000.0);
+        if (warmup.backpressureEvents > 0) {
+            System.out.printf("  Warmup backpressure events: %,d%n", warmup.backpressureEvents);
+        }
+
+        // Release warmup arrays (Task[], TaskTimingStore) before measurement
+        // allocation — with sub-ms tasks the warmup phase can produce millions
+        // of objects; holding them while measurement allocates its own arrays
+        // doubles peak heap usage and can cause OOM.
+        //noinspection UnusedAssignment
+        warmup = null;
+
+        // ---- measurement phase ----
+        long measureNanos = config.measurementSeconds() * 1_000_000_000L;
+        System.out.printf("  Measurement (%d s, open-loop)...%n", config.measurementSeconds());
+
+        PhaseResult measurement = runOpenLoopPhase(executor, measureNanos, true, MEASUREMENT_SEED_OFFSET, actualTaskNanos);
+
+        double measureSecs = measurement.elapsedNanos / 1_000_000_000.0;
+        double throughput  = measurement.submitted / measureSecs;
+
+        System.out.printf("  Measurement done: %,d tasks in %.3f s%n",
+                measurement.submitted, measureSecs);
+        if (measurement.backpressureEvents > 0) {
+            System.out.printf("  Backpressure events: %,d%n", measurement.backpressureEvents);
+        }
+        System.out.printf("  Throughput       : %,.1f tasks/s%n", throughput);
+
+        // ---- record latencies (offline — after all tasks completed) ----
+        LatencyRecorder recorder = new LatencyRecorder(measurement.submitted);
+        for (int i = 0; i < measurement.submitted; i++) {
+            recorder.record(measurement.tasks[i]);
+        }
+
+        // ---- warn if too few samples ----
+        if (recorder.recordedTasks() < MIN_USEFUL_SAMPLES) {
+            System.err.printf("  *** WARNING: only %d tasks recorded — too few for percentile analysis.%n",
+                    recorder.recordedTasks());
+        }
+
+        // ---- print latency summary ----
+        System.out.printf("  --- %s Latency Summary ---%n", label);
+        System.out.println(recorder.summary());
+
+        // ---- measurement consistency check (harness-level) ----
+        System.out.printf("  === Measurement Consistency Check (%s) ===%n", label);
+        System.out.printf("    submitted during measurement : %,d%n", measurement.submitted);
+        System.out.printf("    latency records              : %,d%n", recorder.recordedTasks());
+        if (recorder.recordedTasks() != measurement.submitted) {
+            System.err.printf("    *** WARNING: latency records (%d) != submitted (%d) — mismatch!%n",
+                    recorder.recordedTasks(), measurement.submitted);
+        } else {
+            System.out.println("    OK — all counts reconcile.");
+        }
+
+        return recorder;
     }
 
     /* ================================================================
-     *  Single-batch execution
+     *  Phase dispatcher — selects global or shard-aware strategy
      * ================================================================ */
 
     /**
-     * Builds, submits, and awaits one batch of {@code BATCH_SIZE} tasks.
+     * Dispatches to the appropriate open-loop phase strategy based on the
+     * executor type.
      *
-     * <p>The build loop creates each {@link Task} with its own immutable
-     * {@link CpuBoundWorkload}.  The submit loop is timing-sensitive:
-     * it records submit time immediately before enqueue.  After the
-     * per-batch latch is released, latencies are recorded if a
-     * {@link LatencyRecorder} is provided.
-     *
-     * <p>Recording happens on the main thread <em>after</em>
-     * {@code latch.await()} returns.  The latch's happens-before
-     * guarantees that all timing data written by worker threads is
-     * visible.  Every task in the batch is always recorded — there is
-     * no sampling or filtering.
+     * <ul>
+     *   <li>{@link SharedExecutor} → {@link #runOpenLoopPhaseGlobal}
+     *       (global Semaphore)</li>
+     *   <li>{@link ShardedExecutor} → {@link #runOpenLoopPhaseShardAware}
+     *       (per-shard ready-channel)</li>
+     * </ul>
      */
-    private static void runOneBatch(BenchmarkExecutor executor,
-                                    int iterations,
-                                    TaskTimingStore batchStore,
-                                    Task[] batchTasks,
-                                    long baseTaskId,
-                                    LatencyRecorder recorder) throws InterruptedException {
+    private static PhaseResult runOpenLoopPhase(
+            BenchmarkExecutor executor,
+            long phaseNanos,
+            boolean isMeasurement,
+            long seedOffset,
+            long actualTaskNanos) throws InterruptedException {
 
-        CountDownLatch latch = new CountDownLatch(BATCH_SIZE);
+        if (executor instanceof ShardedExecutor) {
+            return runOpenLoopPhaseShardAware(
+                    executor, phaseNanos, isMeasurement, seedOffset, actualTaskNanos);
+        }
+        return runOpenLoopPhaseGlobal(
+                executor, phaseNanos, isMeasurement, seedOffset, actualTaskNanos);
+    }
 
-        // -- build tasks (each gets its own immutable CpuBoundWorkload) --
-        for (int i = 0; i < BATCH_SIZE; i++) {
-            Workload workload = new CpuBoundWorkload(SEED + baseTaskId + i, iterations);
-            batchTasks[i] = new Task(baseTaskId + i, i, workload, batchStore, latch);
+    /* ================================================================
+     *  Global Semaphore strategy (for SharedExecutor)
+     * ================================================================ */
+
+    /**
+     * Submits tasks continuously using a single global {@link Semaphore}.
+     *
+     * <p>This is the natural backpressure model for a single shared queue:
+     * any worker completion frees a permit, and the next task enters the
+     * one shared queue where any idle worker can pick it up.
+     */
+    private static PhaseResult runOpenLoopPhaseGlobal(
+            BenchmarkExecutor executor,
+            long phaseNanos,
+            boolean isMeasurement,
+            long seedOffset,
+            long actualTaskNanos) throws InterruptedException {
+
+        int maxInflight   = config.maxInflight();
+        int estimatedMax  = estimateMaxTasks(phaseNanos, actualTaskNanos);
+
+        TaskTimingStore store = new TaskTimingStore(estimatedMax);
+        Task[]          tasks = new Task[estimatedMax];
+
+        Semaphore permits       = new Semaphore(maxInflight);
+        Runnable  releasePermit = permits::release;
+
+        int  submitted         = 0;
+        int  backpressureCount = 0;
+        long phaseStart        = System.nanoTime();
+        long deadline          = phaseStart + phaseNanos;
+
+        while (System.nanoTime() < deadline && submitted < estimatedMax) {
+            if (!permits.tryAcquire()) {
+                backpressureCount++;
+                permits.acquire();
+            }
+
+            int  idx      = submitted;
+            long taskSeed = config.seed() + seedOffset + idx;
+
+            Workload w    = new CpuBoundWorkload(taskSeed, config.iterations());
+            Task     task = new Task(idx, idx, w, store, releasePermit, isMeasurement);
+
+            store.recordSubmit(idx, System.nanoTime());
+            executor.submit(task);
+
+            tasks[idx] = task;
+            submitted++;
         }
 
-        // -- submit (timing-sensitive — keep minimal) --
-        for (int i = 0; i < BATCH_SIZE; i++) {
-            batchStore.recordSubmit(i, System.nanoTime());
-            executor.submit(batchTasks[i]);
+        if (submitted >= estimatedMax) {
+            System.err.printf("  *** WARNING: estimated capacity (%,d) reached — phase may be truncated.%n",
+                    estimatedMax);
         }
 
-        // -- await batch completion --
-        latch.await();
+        permits.acquire(maxInflight);
+        permits.release(maxInflight);
 
-        // -- record latencies into the measurement recorder --
-        // All BATCH_SIZE tasks are always recorded; no subset, no filtering.
-        if (recorder != null) {
-            for (int i = 0; i < BATCH_SIZE; i++) {
-                recorder.record(batchTasks[i]);
+        long phaseEnd = System.nanoTime();
+        return new PhaseResult(tasks, submitted, store, phaseEnd - phaseStart, backpressureCount);
+    }
+
+    /* ================================================================
+     *  Per-shard ready-channel strategy (for ShardedExecutor)
+     * ================================================================ */
+
+    /**
+     * Submits tasks continuously using a <b>per-shard ready-channel</b>
+     * instead of a global Semaphore.
+     *
+     * <h3>Why a different strategy for sharded?</h3>
+     * <p>With a global Semaphore and round-robin task IDs, the producer
+     * submits to shard {@code (submitted % workerCount)}.  But the permit
+     * that was just released came from whichever shard happened to finish
+     * first — typically a <em>different</em> shard.  This creates a
+     * <b>routing–completion mismatch</b>:</p>
+     * <ol>
+     *   <li>Shard 5 finishes → global permit released</li>
+     *   <li>Producer submits next task → routes to shard {@code (N % 16)},
+     *       e.g.&nbsp;shard 3</li>
+     *   <li>Shard 3 might still be busy → task queues behind it</li>
+     *   <li>Shard 5 is now idle — but no task goes there</li>
+     * </ol>
+     * <p>Over millions of tasks the <em>aggregate</em> distribution is
+     * perfectly uniform (the per-queue counts confirm this), but the
+     * <em>instantaneous</em> queue depth is unbalanced.  Some shards
+     * accumulate 2–3+ tasks while others sit idle.  This inflates tail
+     * latency (p95/p99 queue wait) by 10–15× compared to SharedExecutor,
+     * which is <b>not</b> a property of the sharded design — it is a
+     * benchmarking artifact caused by the harness.</p>
+     *
+     * <h3>Fix: completion-aware routing</h3>
+     * <p>A {@link ArrayBlockingQueue} of shard IDs acts as a ready-channel.
+     * Initially it contains <b>one</b> copy of each shard ID (total =
+     * {@code workerCount}).  When a task completes it returns its shard ID
+     * to the channel.  The producer takes the next ready shard ID and crafts
+     * a {@code taskId} that will route to <em>that</em> shard.</p>
+     *
+     * <h3>Why perShard = 1?</h3>
+     * <p>With {@code perShard > 1} (e.g.&nbsp;2), each shard pipelines
+     * multiple tasks: one executing + one pre-queued in the per-worker
+     * {@code LinkedBlockingQueue}.  If the executing task takes even
+     * slightly longer than average (GC pause, OS scheduling, cache miss),
+     * the pre-queued task's queue wait is inflated — and no other worker
+     * can steal it.  This is <b>head-of-line blocking</b> within a shard.
+     * With {@code perShard = 1} each shard has at most one task at a time;
+     * the ready-channel token is returned only when the worker is truly
+     * idle.  This eliminates per-shard HOL blocking and produces a fair
+     * comparison against SharedExecutor's work-stealing shared queue.</p>
+     *
+     * <h3>GC note</h3>
+     * <p>Shard IDs are 0–{@code workerCount-1}, well within the
+     * {@link Integer} cache (−128 to 127), so {@code offer()} / {@code take()}
+     * cause zero boxing allocation.  Per-shard callbacks are pre-created
+     * (one {@link Runnable} per shard, not per task).</p>
+     */
+    private static PhaseResult runOpenLoopPhaseShardAware(
+            BenchmarkExecutor executor,
+            long phaseNanos,
+            boolean isMeasurement,
+            long seedOffset,
+            long actualTaskNanos) throws InterruptedException {
+
+        int workerCount   = config.workerCount();
+        // ---- perShard = 1: no pre-queuing ----
+        // With perShard > 1 (e.g. 2), each shard pipelines multiple tasks:
+        // one executing + one pre-queued.  This causes head-of-line blocking
+        // within each shard: if the executing task is even slightly slower
+        // than average (GC jitter, OS scheduling), the pre-queued task's
+        // queue wait is inflated — and no other worker can steal it.
+        // The SharedExecutor doesn't suffer from this because any idle worker
+        // grabs the next task from the single shared queue.
+        //
+        // With perShard = 1 each shard has at most one task at a time.
+        // The ready-channel token is only returned when the worker is truly
+        // idle, so the producer submits directly to an idle shard — zero
+        // head-of-line blocking and a fair comparison against SharedExecutor.
+        int perShard      = 1;
+        int totalSlots    = perShard * workerCount;
+        int estimatedMax  = estimateMaxTasks(phaseNanos, actualTaskNanos);
+
+        TaskTimingStore store = new TaskTimingStore(estimatedMax);
+        Task[]          tasks = new Task[estimatedMax];
+
+        // Ready-shard channel: when a worker finishes a task it returns
+        // its shard ID here; the producer takes the next available shard.
+        ArrayBlockingQueue<Integer> readyShards = new ArrayBlockingQueue<>(totalSlots);
+        for (int s = 0; s < workerCount; s++) {
+            for (int j = 0; j < perShard; j++) {
+                readyShards.add(s);
             }
         }
+
+        // Pre-create one callback per shard (no per-task lambda allocation).
+        // Integer.valueOf(s) is cached for 0..127, so offer() is allocation-free.
+        Runnable[] shardCallbacks = new Runnable[workerCount];
+        for (int i = 0; i < workerCount; i++) {
+            final int s = i;
+            shardCallbacks[i] = () -> readyShards.offer(s);
+        }
+
+        // Per-shard sequence counter — used to compute a taskId that
+        // routes to the target shard via ShardedExecutor's hash formula:
+        //   shard = Math.floorMod(Long.hashCode(taskId), workerCount)
+        // For taskId < Integer.MAX_VALUE: Long.hashCode(x) == (int)x,
+        // so taskId % workerCount == targetShard when
+        //   taskId = targetShard + seqForShard * workerCount.
+        long[] shardSeq = new long[workerCount];
+
+        int  submitted         = 0;
+        int  backpressureCount = 0;
+        long phaseStart        = System.nanoTime();
+        long deadline          = phaseStart + phaseNanos;
+
+        while (System.nanoTime() < deadline && submitted < estimatedMax) {
+            // Take the next ready shard (blocks if all shards are at capacity).
+            Integer targetShard = readyShards.poll();
+            if (targetShard == null) {
+                backpressureCount++;
+                targetShard = readyShards.take();
+            }
+
+            int  idx      = submitted;
+            // taskId crafted so ShardedExecutor routes to targetShard
+            long taskId   = targetShard + shardSeq[targetShard]++ * workerCount;
+            long taskSeed = config.seed() + seedOffset + idx;
+
+            Workload w    = new CpuBoundWorkload(taskSeed, config.iterations());
+            Task     task = new Task(taskId, idx, w, store,
+                                     shardCallbacks[targetShard], isMeasurement);
+
+            store.recordSubmit(idx, System.nanoTime());
+            executor.submit(task);
+
+            tasks[idx] = task;
+            submitted++;
+        }
+
+        if (submitted >= estimatedMax) {
+            System.err.printf("  *** WARNING: estimated capacity (%,d) reached — phase may be truncated.%n",
+                    estimatedMax);
+        }
+
+        // Drain: collect all totalSlots tokens.  Each token is either an
+        // initial slot that was never consumed, or a completion callback's
+        // returned shard ID.  Collecting all of them guarantees every
+        // in-flight task has finished.
+        for (int i = 0; i < totalSlots; i++) {
+            readyShards.take();
+        }
+
+        long phaseEnd = System.nanoTime();
+        return new PhaseResult(tasks, submitted, store, phaseEnd - phaseStart, backpressureCount);
     }
 
     /* ================================================================
-     *  Capacity estimation for LatencyRecorder pre-sizing
+     *  Capacity estimation
      * ================================================================ */
 
-    private static int estimateTaskCount(long phaseSeconds) {
-        double waves = (double) BATCH_SIZE / WORKER_COUNT;
-        double batchSeconds = waves * TARGET_TASK_NANOS / 1_000_000_000.0;
-        if (batchSeconds <= 0) batchSeconds = 0.001;
+    /**
+     * Estimates the maximum number of tasks that could be processed in
+     * {@code phaseNanos} nanoseconds, with 2× headroom.  This determines
+     * the pre-allocation size for {@link TaskTimingStore} and the task array.
+     *
+     * <p>Uses the actual measured task time (not the configured target) so
+     * the estimate is accurate even when {@code --iterations} overrides the
+     * default calibration.
+     *
+     * <p>The estimate is: {@code workerCount / taskSeconds * phaseSeconds * 2}.
+     * A minimum of 4096 is enforced to handle edge cases.
+     */
+    private static int estimateMaxTasks(long phaseNanos, long actualTaskNanos) {
+        double phaseSeconds = phaseNanos / 1_000_000_000.0;
+        double taskSeconds  = actualTaskNanos / 1_000_000_000.0;
+        if (taskSeconds <= 0) taskSeconds = 0.000_001;
+        double maxThroughput = config.workerCount() / taskSeconds;
+        int estimated = (int) (maxThroughput * phaseSeconds);
+        // 2× headroom + minimum floor
+        return Math.max(estimated * 2, 4096);
+    }
 
-        long batches = (long) (phaseSeconds / batchSeconds);
-        long tasks   = batches * BATCH_SIZE;
+    /**
+     * Measures the wall-clock time for a single {@link CpuBoundWorkload}
+     * execution using the current config's iterations.
+     *
+     * <p>Runs a small pilot (200 invocations) to trigger JIT compilation
+     * (C1 / OSR) before measuring, so the returned time reflects steady-
+     * state performance, not interpreter overhead.  This is essential for
+     * accurate capacity estimation: the cold-start time can be 10–25×
+     * slower than the JIT-compiled time.
+     */
+    private static long measureActualTaskNanos() {
+        long sink = 0;
 
-        // 50 % headroom so LongBuffer never needs to grow
-        return (int) Math.min(Math.max(tasks * 3 / 2, MIN_USEFUL_SAMPLES), Integer.MAX_VALUE);
+        // Pilot: trigger JIT compilation of CpuBoundWorkload.execute()
+        for (int i = 0; i < 200; i++) {
+            sink += new CpuBoundWorkload(config.seed() + i, config.iterations()).execute();
+        }
+
+        // Measure post-compilation (average of 20 runs for stability)
+        long start = System.nanoTime();
+        int runs = 20;
+        for (int i = 0; i < runs; i++) {
+            sink += new CpuBoundWorkload(config.seed() + 1000 + i, config.iterations()).execute();
+        }
+        long elapsed = System.nanoTime() - start;
+
+        // Consume sink to prevent JIT dead-code elimination
+        if (sink == Long.MIN_VALUE) System.out.print("");
+
+        return Math.max(elapsed / runs, 1);
     }
 
     /* ================================================================
-     *  Side-by-side comparison output
+     *  Executor-level measurement consistency
+     * ================================================================ */
+
+    /**
+     * Prints a reconciliation summary comparing executor-reported measurement
+     * count and latency records.  Warns on any mismatch.
+     */
+    private static void printExecutorConsistency(String label,
+                                                 long executorMeasurementCount,
+                                                 int latencyRecords) {
+        System.out.println();
+        System.out.printf("  === Executor Consistency Check (%s) ===%n", label);
+        System.out.printf("    executor measurement processed : %,d%n", executorMeasurementCount);
+        System.out.printf("    latency records                : %,d%n", latencyRecords);
+
+        if (executorMeasurementCount != latencyRecords) {
+            System.err.printf("    *** WARNING: executor count (%d) != latency records (%d)%n",
+                    executorMeasurementCount, latencyRecords);
+        } else {
+            System.out.println("    OK — executor and latency counts reconcile.");
+        }
+    }
+
+    /* ================================================================
+     *  Side-by-side comparison output (compare mode only)
      * ================================================================ */
 
     private static void printComparison(LatencyRecorder shared, LatencyRecorder sharded) {
