@@ -109,6 +109,8 @@ public class BenchmarkMain {
         System.out.printf("  Iterations        : %,d%n", config.iterations());
         System.out.printf("  Warmup            : %d s%n", config.warmupSeconds());
         System.out.printf("  Measurement       : %d s%n", config.measurementSeconds());
+        System.out.printf("  Task count        : %s%n",
+                config.taskCount() > 0 ? String.format("%,d (fixed)", config.taskCount()) : "unlimited (time-based)");
         System.out.printf("  Task target       : %.1f ms%n", config.targetTaskNanos() / 1_000_000.0);
         System.out.printf("  Submission model  : open-loop (Semaphore-gated, %d permits)%n",
                 config.maxInflight());
@@ -197,9 +199,12 @@ public class BenchmarkMain {
         Integer miArg = BenchmarkConfig.parseIntArg(args, "--maxInflight");
         int maxInflight = miArg != null ? miArg : workerCount * 2;
 
+        Integer tcArg = BenchmarkConfig.parseIntArg(args, "--taskCount");
+        int taskCount = tcArg != null ? tcArg : 0;
+
         config = new BenchmarkConfig(workerCount, maxInflight, DEFAULT_SEED,
                 iterations, DEFAULT_WARMUP_SECONDS, DEFAULT_MEASURE_SECONDS,
-                DEFAULT_TARGET_TASK_NANOS);
+                DEFAULT_TARGET_TASK_NANOS, taskCount);
 
         return "CALIBRATED (dynamic)";
     }
@@ -415,7 +420,9 @@ public class BenchmarkMain {
         long phaseStart        = System.nanoTime();
         long deadline          = phaseStart + phaseNanos;
 
-        while (System.nanoTime() < deadline && submitted < estimatedMax) {
+        int taskLimit = config.taskCount() > 0 ? config.taskCount() : estimatedMax;
+
+        while (System.nanoTime() < deadline && submitted < taskLimit) {
             if (!permits.tryAcquire()) {
                 backpressureCount++;
                 permits.acquire();
@@ -434,7 +441,7 @@ public class BenchmarkMain {
             submitted++;
         }
 
-        if (submitted >= estimatedMax) {
+        if (config.taskCount() == 0 && submitted >= estimatedMax) {
             System.err.printf("  *** WARNING: estimated capacity (%,d) reached — phase may be truncated.%n",
                     estimatedMax);
         }
@@ -558,7 +565,9 @@ public class BenchmarkMain {
         long phaseStart        = System.nanoTime();
         long deadline          = phaseStart + phaseNanos;
 
-        while (System.nanoTime() < deadline && submitted < estimatedMax) {
+        int taskLimit = config.taskCount() > 0 ? config.taskCount() : estimatedMax;
+
+        while (System.nanoTime() < deadline && submitted < taskLimit) {
             // Take the next ready shard (blocks if all shards are at capacity).
             Integer targetShard = readyShards.poll();
             if (targetShard == null) {
@@ -582,7 +591,7 @@ public class BenchmarkMain {
             submitted++;
         }
 
-        if (submitted >= estimatedMax) {
+        if (config.taskCount() == 0 && submitted >= estimatedMax) {
             System.err.printf("  *** WARNING: estimated capacity (%,d) reached — phase may be truncated.%n",
                     estimatedMax);
         }
@@ -616,6 +625,10 @@ public class BenchmarkMain {
      * A minimum of 4096 is enforced to handle edge cases.
      */
     private static int estimateMaxTasks(long phaseNanos, long actualTaskNanos) {
+        // If a fixed task count is configured, use it directly (+ small headroom)
+        if (config.taskCount() > 0) {
+            return config.taskCount() + 64;
+        }
         double phaseSeconds = phaseNanos / 1_000_000_000.0;
         double taskSeconds  = actualTaskNanos / 1_000_000_000.0;
         if (taskSeconds <= 0) taskSeconds = 0.000_001;
