@@ -31,7 +31,10 @@ public enum BenchmarkMode {
     /** Run only {@link ShardedExecutor}. */
     SHARDED,
 
-    /** Run both executors sequentially and print a side-by-side comparison. */
+    /** Run type-aware hybrid routing (SHORT→sharded, MEDIUM/LONG→shared). */
+    TYPE_AWARE,
+
+    /** Run all three policies sequentially and print a side-by-side comparison. */
     COMPARE;
 
     /**
@@ -51,7 +54,7 @@ public enum BenchmarkMode {
                 try {
                     return BenchmarkMode.valueOf(value);
                 } catch (IllegalArgumentException e) {
-                    System.err.printf("Unknown benchmark mode: '%s'.  Valid modes: prepare, shared, sharded, compare%n", value);
+                    System.err.printf("Unknown benchmark mode: '%s'.  Valid modes: prepare, shared, sharded, type_aware, compare%n", value);
                     System.exit(1);
                 }
             }

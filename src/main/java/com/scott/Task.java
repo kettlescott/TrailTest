@@ -62,23 +62,39 @@ public final class Task implements Runnable {
      */
     private final boolean measurement;
 
+    /**
+     * Classification of this task for type-aware routing.
+     * Never {@code null} — defaults to {@link TaskType#SHORT}.
+     */
+    private final TaskType taskType;
+
     /* ---- recorded during run() — no volatile needed (see class doc) ---- */
 
     private long workloadResult;
 
     /**
-     * Master constructor — accepts both latch and callback.
-     *
-     * @param taskId          logical identifier (may differ from {@code taskIndex})
-     * @param taskIndex       index into the {@code timingStore} arrays
-     * @param workload        the synthetic workload to execute
-     * @param timingStore     shared store where submit/start/finish times are recorded
-     * @param completionLatch optional latch counted down when the task finishes
-     *                        ({@code null} if not needed)
-     * @param onComplete      optional callback invoked when the task finishes
-     *                        ({@code null} if not needed) — typically releases
-     *                        a {@link java.util.concurrent.Semaphore} permit
-     * @param measurement     {@code true} if this task is part of the measurement phase
+     * Master constructor — accepts both latch, callback, and task type.
+     */
+    public Task(long taskId,
+                int taskIndex,
+                Workload workload,
+                TaskTimingStore timingStore,
+                CountDownLatch completionLatch,
+                Runnable onComplete,
+                boolean measurement,
+                TaskType taskType) {
+        this.taskId          = taskId;
+        this.taskIndex       = taskIndex;
+        this.workload        = workload;
+        this.timingStore     = timingStore;
+        this.completionLatch = completionLatch;
+        this.onComplete      = onComplete;
+        this.measurement     = measurement;
+        this.taskType        = taskType != null ? taskType : TaskType.SHORT;
+    }
+
+    /**
+     * Backward-compatible 7-arg constructor — defaults to {@link TaskType#SHORT}.
      */
     public Task(long taskId,
                 int taskIndex,
@@ -87,13 +103,7 @@ public final class Task implements Runnable {
                 CountDownLatch completionLatch,
                 Runnable onComplete,
                 boolean measurement) {
-        this.taskId          = taskId;
-        this.taskIndex       = taskIndex;
-        this.workload        = workload;
-        this.timingStore     = timingStore;
-        this.completionLatch = completionLatch;
-        this.onComplete      = onComplete;
-        this.measurement     = measurement;
+        this(taskId, taskIndex, workload, timingStore, completionLatch, onComplete, measurement, TaskType.SHORT);
     }
 
     /**
@@ -105,14 +115,11 @@ public final class Task implements Runnable {
                 TaskTimingStore timingStore,
                 CountDownLatch completionLatch,
                 boolean measurement) {
-        this(taskId, taskIndex, workload, timingStore, completionLatch, null, measurement);
+        this(taskId, taskIndex, workload, timingStore, completionLatch, null, measurement, TaskType.SHORT);
     }
 
     /**
      * Callback-based constructor (open-loop submission).
-     *
-     * <p>Typically used with a {@link java.util.concurrent.Semaphore}:
-     * {@code new Task(id, idx, w, store, permits::release, true)}.
      */
     public Task(long taskId,
                 int taskIndex,
@@ -120,14 +127,14 @@ public final class Task implements Runnable {
                 TaskTimingStore timingStore,
                 Runnable onComplete,
                 boolean measurement) {
-        this(taskId, taskIndex, workload, timingStore, null, onComplete, measurement);
+        this(taskId, taskIndex, workload, timingStore, null, onComplete, measurement, TaskType.SHORT);
     }
 
     /**
      * Convenience constructor without a latch or callback (defaults to non-measurement).
      */
     public Task(long taskId, int taskIndex, Workload workload, TaskTimingStore timingStore) {
-        this(taskId, taskIndex, workload, timingStore, null, null, false);
+        this(taskId, taskIndex, workload, timingStore, null, null, false, TaskType.SHORT);
     }
 
     /* ================================================================
@@ -187,6 +194,7 @@ public final class Task implements Runnable {
     public int              taskIndex()        { return taskIndex; }
     public long             workloadResult()   { return workloadResult; }
     public boolean          isMeasurement()    { return measurement; }
+    public TaskType         taskType()         { return taskType; }
     public Workload         getWorkload()      { return workload; }
     public CountDownLatch   getCompletionLatch() { return completionLatch; }
 
