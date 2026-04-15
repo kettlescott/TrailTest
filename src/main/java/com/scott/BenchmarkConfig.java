@@ -44,6 +44,8 @@ package com.scott;
  * @param warmupSeconds      warmup phase duration in seconds
  * @param measurementSeconds measurement phase duration in seconds
  * @param targetTaskNanos    desired per-task execution time (metadata — not used at runtime)
+ * @param taskCount          fixed number of tasks to submit per measurement phase
+ *                           (0 = unlimited — run until time deadline, existing behaviour)
  */
 public record BenchmarkConfig(
         int  workerCount,
@@ -52,7 +54,8 @@ public record BenchmarkConfig(
         int  iterations,
         int  warmupSeconds,
         int  measurementSeconds,
-        long targetTaskNanos
+        long targetTaskNanos,
+        int  taskCount
 ) {
 
     /* ---- compact constructor with validation ---- */
@@ -68,6 +71,8 @@ public record BenchmarkConfig(
             throw new IllegalArgumentException("warmupSeconds must be >= 0, got " + warmupSeconds);
         if (measurementSeconds <= 0)
             throw new IllegalArgumentException("measurementSeconds must be > 0, got " + measurementSeconds);
+        if (taskCount < 0)
+            throw new IllegalArgumentException("taskCount must be >= 0 (0 = unlimited), got " + taskCount);
     }
 
     /* ================================================================
@@ -79,7 +84,7 @@ public record BenchmarkConfig(
      * into scripts or documentation.
      */
     public String toFixedConfigBlock() {
-        return String.format("""
+        String base = String.format("""
                 iterations=%d
                 warmupSeconds=%d
                 measurementSeconds=%d
@@ -88,15 +93,17 @@ public record BenchmarkConfig(
                 seed=%d""",
                 iterations, warmupSeconds, measurementSeconds,
                 workerCount, maxInflight, seed);
+        return taskCount > 0 ? base + "\ntaskCount=" + taskCount : base;
     }
 
     /**
      * Returns the CLI arguments needed to replay this exact config.
      */
     public String toCliArgs() {
-        return String.format(
+        String base = String.format(
                 "--iterations=%d --warmupSeconds=%d --measurementSeconds=%d --seed=%d --workerCount=%d --maxInflight=%d",
                 iterations, warmupSeconds, measurementSeconds, seed, workerCount, maxInflight);
+        return taskCount > 0 ? base + " --taskCount=" + taskCount : base;
     }
 
     /* ================================================================
@@ -141,8 +148,11 @@ public record BenchmarkConfig(
         Integer miArg    = parseIntArg(args, "--maxInflight");
         int maxInflight  = miArg != null ? miArg : workerCount * 2;
 
+        Integer tcArg   = parseIntArg(args, "--taskCount");
+        int taskCount   = tcArg != null ? tcArg : 0;
+
         return new BenchmarkConfig(workerCount, maxInflight, seed,
-                iterations, warmupSeconds, measurementSeconds, defaultTargetNanos);
+                iterations, warmupSeconds, measurementSeconds, defaultTargetNanos, taskCount);
     }
 
     /* ---- primitive arg parsers ---- */
