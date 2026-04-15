@@ -17,6 +17,10 @@ To package into a JAR:
 mvn clean package
 ```
 
+JAR equivalents below use:
+
+`target/TrailSystem-1.0-SNAPSHOT.jar`
+
 ## Running the Benchmark (`BenchmarkMain`)
 
 The main benchmark compares a **SharedExecutor** (single shared queue) against a **ShardedExecutor** (per-worker queues) using an **open-loop submission model** with Semaphore-gated backpressure.
@@ -45,14 +49,20 @@ The benchmark uses a continuous open-loop producer instead of closed-loop batche
 
 ```bash
 # Compare mode (default — both executors, side-by-side)
-java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain
+java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain --taskCount=<n>
+java -Xms1g -Xmx1g --enable-preview -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --taskCount=<n>
 
 # Shared only
-java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain --mode=shared
+java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain --mode=shared --taskCount=<n>
+java -Xms1g -Xmx1g --enable-preview -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --mode=shared --taskCount=<n>
 
 # Sharded only
-java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain --mode=sharded
+java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain --mode=sharded --taskCount=<n>
+java -Xms1g -Xmx1g --enable-preview -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --mode=sharded --taskCount=<n>
 ```
+
+> Replace `<n>` with the number of tasks you want (e.g. `--taskCount=10000`).  
+> Omit `--taskCount` entirely to use the default time-based mode (run until `--measurementSeconds` expires).
 
 ### Configuration Parameters
 
@@ -65,6 +75,22 @@ java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain -
 | `--workerCount=<n>`    | available processors  | Number of worker threads                     |
 | `--maxInflight=<n>`    | `workerCount * 2`     | Max tasks in flight (Semaphore permits)       |
 | `--seed=<n>`           | `3735928559`          | Base seed for deterministic workload          |
+| `--taskCount=<n>`      | `0` (unlimited)       | Fixed number of tasks to submit per measurement phase; `0` = run until time deadline (default) |
+
+### Fixed Task Count
+
+Use `--taskCount` to control exactly how many tasks are submitted during the measurement phase,
+instead of letting the benchmark run for a fixed duration.
+
+```bash
+# Run exactly 10000 tasks
+java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain --mode=shared --taskCount=10000
+java -Xms1g -Xmx1g --enable-preview -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --mode=shared --taskCount=10000
+
+# Run exactly 50000 tasks, both executors compared
+java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain --mode=compare --taskCount=50000
+java -Xms1g -Xmx1g --enable-preview -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --mode=compare --taskCount=50000
+```
 
 ### Heap Sizing
 
@@ -87,15 +113,22 @@ To guarantee identical workloads across runs:
 ```bash
 # Step 1 — calibrate once:
 java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain --mode=prepare
+java -Xms1g -Xmx1g --enable-preview -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --mode=prepare
 
 # Step 2 — copy the printed values into separate runs:
 java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain \
      --mode=shared --iterations=450582 --warmupSeconds=3 \
-     --measurementSeconds=10 --seed=3735928559 --workerCount=16 --maxInflight=32
+     --measurementSeconds=10 --seed=3735928559 --workerCount=16 --maxInflight=32 --taskCount=<n>
+java -Xms1g -Xmx1g --enable-preview -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain \
+     --mode=shared --iterations=450582 --warmupSeconds=3 \
+     --measurementSeconds=10 --seed=3735928559 --workerCount=16 --maxInflight=32 --taskCount=<n>
 
 java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain \
      --mode=sharded --iterations=450582 --warmupSeconds=3 \
-     --measurementSeconds=10 --seed=3735928559 --workerCount=16 --maxInflight=32
+     --measurementSeconds=10 --seed=3735928559 --workerCount=16 --maxInflight=32 --taskCount=<n>
+java -Xms1g -Xmx1g --enable-preview -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain \
+     --mode=sharded --iterations=450582 --warmupSeconds=3 \
+     --measurementSeconds=10 --seed=3735928559 --workerCount=16 --maxInflight=32 --taskCount=<n>
 ```
 
 On **Windows / PowerShell** (use backtick for line continuation):
@@ -103,7 +136,10 @@ On **Windows / PowerShell** (use backtick for line continuation):
 ```powershell
 java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain `
      --mode=shared --iterations=450582 --warmupSeconds=3 `
-     --measurementSeconds=10 --seed=3735928559 --workerCount=16 --maxInflight=32
+     --measurementSeconds=10 --seed=3735928559 --workerCount=16 --maxInflight=32 --taskCount=<n>
+java -Xms1g -Xmx1g --enable-preview -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain `
+     --mode=shared --iterations=450582 --warmupSeconds=3 `
+     --measurementSeconds=10 --seed=3735928559 --workerCount=16 --maxInflight=32 --taskCount=<n>
 ```
 
 ### Debug Mode
@@ -111,7 +147,8 @@ java -Xms1g -Xmx1g --enable-preview -cp target/classes com.scott.BenchmarkMain `
 Enable extra consistency checks, bounds verification, and diagnostic logging by setting the `benchmark.debug` system property:
 
 ```bash
-java -Xms1g -Xmx1g -Dbenchmark.debug=true --enable-preview -cp target/classes com.scott.BenchmarkMain
+java -Xms1g -Xmx1g -Dbenchmark.debug=true --enable-preview -cp target/classes com.scott.BenchmarkMain --taskCount=<n>
+java -Xms1g -Xmx1g -Dbenchmark.debug=true --enable-preview -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --taskCount=<n>
 ```
 
 When debug mode is **off** (default), all debug code paths are dead-code-eliminated by the JIT compiler, producing zero overhead on the hot path.
@@ -128,12 +165,18 @@ Use JVM-level JFR flags to record the benchmark. The open-loop model is designed
 # Record shared-only run
 java -Xms1g -Xmx1g --enable-preview \
      -XX:StartFlightRecording=filename=shared.jfr,duration=60s \
-     -cp target/classes com.scott.BenchmarkMain --mode=shared
+     -cp target/classes com.scott.BenchmarkMain --mode=shared --taskCount=<n>
+java -Xms1g -Xmx1g --enable-preview \
+     -XX:StartFlightRecording=filename=shared.jfr,duration=60s \
+     -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --mode=shared --taskCount=<n>
 
 # Record sharded-only run
 java -Xms1g -Xmx1g --enable-preview \
      -XX:StartFlightRecording=filename=sharded.jfr,duration=60s \
-     -cp target/classes com.scott.BenchmarkMain --mode=sharded
+     -cp target/classes com.scott.BenchmarkMain --mode=sharded --taskCount=<n>
+java -Xms1g -Xmx1g --enable-preview \
+     -XX:StartFlightRecording=filename=sharded.jfr,duration=60s \
+     -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --mode=sharded --taskCount=<n>
 ```
 
 On **Windows / PowerShell**:
@@ -141,11 +184,17 @@ On **Windows / PowerShell**:
 ```powershell
 java -Xms1g -Xmx1g --enable-preview `
      -XX:StartFlightRecording=filename=shared.jfr,duration=60s `
-     -cp target/classes com.scott.BenchmarkMain --mode=shared
+     -cp target/classes com.scott.BenchmarkMain --mode=shared --taskCount=<n>
+java -Xms1g -Xmx1g --enable-preview `
+     -XX:StartFlightRecording=filename=shared.jfr,duration=60s `
+     -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --mode=shared --taskCount=<n>
 
 java -Xms1g -Xmx1g --enable-preview `
      -XX:StartFlightRecording=filename=sharded.jfr,duration=60s `
-     -cp target/classes com.scott.BenchmarkMain --mode=sharded
+     -cp target/classes com.scott.BenchmarkMain --mode=sharded --taskCount=<n>
+java -Xms1g -Xmx1g --enable-preview `
+     -XX:StartFlightRecording=filename=sharded.jfr,duration=60s `
+     -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --mode=sharded --taskCount=<n>
 ```
 
 ### Common JFR Options
@@ -164,7 +213,10 @@ java -Xms1g -Xmx1g --enable-preview `
 ```bash
 java -Xms1g -Xmx1g --enable-preview \
      -XX:StartFlightRecording=filename=shared-profile.jfr,settings=profile,duration=60s \
-     -cp target/classes com.scott.BenchmarkMain --mode=shared
+     -cp target/classes com.scott.BenchmarkMain --mode=shared --taskCount=<n>
+java -Xms1g -Xmx1g --enable-preview \
+     -XX:StartFlightRecording=filename=shared-profile.jfr,settings=profile,duration=60s \
+     -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --mode=shared --taskCount=<n>
 ```
 
 ### Recording the Full Run (no fixed duration)
@@ -175,7 +227,10 @@ JFR writes the file when the JVM shuts down:
 ```bash
 java -Xms1g -Xmx1g --enable-preview \
      -XX:StartFlightRecording=filename=shared.jfr,dumponexit=true \
-     -cp target/classes com.scott.BenchmarkMain --mode=shared
+     -cp target/classes com.scott.BenchmarkMain --mode=shared --taskCount=<n>
+java -Xms1g -Xmx1g --enable-preview \
+     -XX:StartFlightRecording=filename=shared.jfr,dumponexit=true \
+     -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.BenchmarkMain --mode=shared --taskCount=<n>
 ```
 
 ### Viewing Results
@@ -219,6 +274,8 @@ This demonstrates CPU core pinning using the Foreign Function & Memory (FFM) API
 ```bash
 java --enable-preview --enable-native-access=ALL-UNNAMED \
      -cp target/classes com.scott.PinningExample
+java --enable-preview --enable-native-access=ALL-UNNAMED \
+     -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.PinningExample
 ```
 
 On **Windows / PowerShell**:
@@ -226,6 +283,8 @@ On **Windows / PowerShell**:
 ```powershell
 java --enable-preview --enable-native-access=ALL-UNNAMED `
      -cp target/classes com.scott.PinningExample
+java --enable-preview --enable-native-access=ALL-UNNAMED `
+     -cp target/TrailSystem-1.0-SNAPSHOT.jar com.scott.PinningExample
 ```
 
 ### Platform Notes
@@ -250,5 +309,5 @@ mvn compile exec:java
 To run `BenchmarkMain` instead:
 
 ```bash
-MAVEN_OPTS="-Xms1g -Xmx1g" mvn compile exec:java -Dexec.mainClass="com.scott.BenchmarkMain" -Dexec.args="--mode=compare"
+MAVEN_OPTS="-Xms1g -Xmx1g" mvn compile exec:java -Dexec.mainClass="com.scott.BenchmarkMain" -Dexec.args="--mode=compare --taskCount=<n>"
 ```
