@@ -104,10 +104,8 @@ public final class SharedExecutor implements BenchmarkExecutor {
      * @return the newly created {@link Task}
      */
     public Task submitNew(long taskId, Workload workload) {
-        TaskTimingStore store = new TaskTimingStore(1);
         long submitTime = System.nanoTime();
-        store.recordSubmit(0, submitTime);
-        Task task = new Task(taskId, 0, workload, store);
+        Task task = new Task(taskId, TaskType.SHORT, 1, submitTime, false, workload, (Runnable) null);
         submit(task);
         return task;
     }

@@ -62,5 +62,18 @@ public enum BenchmarkMode {
         // Default: compare mode (preserves old behaviour)
         return COMPARE;
     }
+
+    public static BenchmarkMode fromConfigValue(String value) {
+        if (value == null) {
+            throw new IllegalArgumentException("Run mode is required");
+        }
+        String normalized = value.trim().toUpperCase().replace('-', '_');
+        try {
+            return BenchmarkMode.valueOf(normalized);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    "Unknown run mode: '" + value + "' (expected shared|sharded|type_aware|compare|prepare)");
+        }
+    }
 }
 

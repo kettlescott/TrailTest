@@ -1,0 +1,41 @@
+global:
+  workerCount: 16
+  maxInflight: 32
+  seed: 3735928559
+  targetTaskNanos: 100000
+  warmupSeconds: 3
+  measurementSeconds: 10
+  taskCount: 99999999
+
+workloads:
+  short_only:
+    kind: single
+    type: short
+
+  mixed_60_30_10:
+    kind: mix
+    distribution:
+      short: 60
+      medium: 30
+      long: 10
+    generation: shuffled
+
+profiling:
+  enabled: true
+  control: cli
+  settings: profile
+  start: beforeMeasurement
+  stop: afterMeasurement
+  filename: ${runName}.jfr
+  startCommand: JFR.start name=${runName} settings=${settings} filename=${outputFile}
+  stopCommand: JFR.stop name=${runName} filename=${outputFile}
+
+runs:
+  - name: shared_short
+    mode: shared
+    workload: short_only
+
+  - name: sharded_short
+    mode: sharded
+    workload: short_only
+

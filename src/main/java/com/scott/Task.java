@@ -44,97 +44,65 @@ import java.util.concurrent.CountDownLatch;
  */
 public final class Task implements Runnable {
 
-    /* ---- identity (set at construction) ---- */
-
-    private final long             taskId;
-    private final int              taskIndex;
-    private final Workload         workload;
-    private final TaskTimingStore  timingStore;
-    private final CountDownLatch   completionLatch;   // nullable
-    private final Runnable         onComplete;        // nullable — open-loop callback
-
-    /**
-     * Benchmark phase flag.  {@code true} if this task belongs to the
-     * measurement window; {@code false} for warmup.  Set once at
-     * construction and never changed.  Workers use this to maintain
-     * separate measurement-only counters so that per-queue distribution
-     * and latency recording are consistent.
-     */
+    private final long taskId;
+    private final TaskType type;
+    private final int iterations;
+    private final long submitNanos;
     private final boolean measurement;
+    private final Workload workload;
+    private final long workloadSeed;
+    private final CountDownLatch completionLatch;
+    private final Runnable onComplete;
 
-    /**
-     * Classification of this task for type-aware routing.
-     * Never {@code null} — defaults to {@link TaskType#SHORT}.
-     */
-    private final TaskType taskType;
-
-    /* ---- recorded during run() — no volatile needed (see class doc) ---- */
-
+    private long startNanos;
+    private long finishNanos;
     private long workloadResult;
 
-    /**
-     * Master constructor — accepts both latch, callback, and task type.
-     */
     public Task(long taskId,
-                int taskIndex,
-                Workload workload,
-                TaskTimingStore timingStore,
-                CountDownLatch completionLatch,
-                Runnable onComplete,
+                TaskType type,
+                int iterations,
+                long submitNanos,
                 boolean measurement,
-                TaskType taskType) {
-        this.taskId          = taskId;
-        this.taskIndex       = taskIndex;
-        this.workload        = workload;
-        this.timingStore     = timingStore;
+                Workload workload,
+                CountDownLatch completionLatch,
+                Runnable onComplete) {
+        this.taskId = taskId;
+        this.type = type == null ? TaskType.SHORT : type;
+        this.iterations = iterations;
+        this.submitNanos = submitNanos;
+        this.measurement = measurement;
+        this.workload = workload;
+        this.workloadSeed = 0L;
         this.completionLatch = completionLatch;
-        this.onComplete      = onComplete;
-        this.measurement     = measurement;
-        this.taskType        = taskType != null ? taskType : TaskType.SHORT;
+        this.onComplete = onComplete;
     }
 
-    /**
-     * Backward-compatible 7-arg constructor — defaults to {@link TaskType#SHORT}.
-     */
     public Task(long taskId,
-                int taskIndex,
-                Workload workload,
-                TaskTimingStore timingStore,
-                CountDownLatch completionLatch,
-                Runnable onComplete,
-                boolean measurement) {
-        this(taskId, taskIndex, workload, timingStore, completionLatch, onComplete, measurement, TaskType.SHORT);
+                TaskType type,
+                int iterations,
+                long submitNanos,
+                boolean measurement,
+                long workloadSeed,
+                Runnable onComplete) {
+        this.taskId = taskId;
+        this.type = type == null ? TaskType.SHORT : type;
+        this.iterations = iterations;
+        this.submitNanos = submitNanos;
+        this.measurement = measurement;
+        this.workload = null;
+        this.workloadSeed = workloadSeed;
+        this.completionLatch = null;
+        this.onComplete = onComplete;
     }
 
-    /**
-     * Latch-based constructor (backward compatible — closed-loop batches).
-     */
     public Task(long taskId,
-                int taskIndex,
+                TaskType type,
+                int iterations,
+                long submitNanos,
+                boolean measurement,
                 Workload workload,
-                TaskTimingStore timingStore,
-                CountDownLatch completionLatch,
-                boolean measurement) {
-        this(taskId, taskIndex, workload, timingStore, completionLatch, null, measurement, TaskType.SHORT);
-    }
-
-    /**
-     * Callback-based constructor (open-loop submission).
-     */
-    public Task(long taskId,
-                int taskIndex,
-                Workload workload,
-                TaskTimingStore timingStore,
-                Runnable onComplete,
-                boolean measurement) {
-        this(taskId, taskIndex, workload, timingStore, null, onComplete, measurement, TaskType.SHORT);
-    }
-
-    /**
-     * Convenience constructor without a latch or callback (defaults to non-measurement).
-     */
-    public Task(long taskId, int taskIndex, Workload workload, TaskTimingStore timingStore) {
-        this(taskId, taskIndex, workload, timingStore, null, null, false, TaskType.SHORT);
+                Runnable onComplete) {
+        this(taskId, type, iterations, submitNanos, measurement, workload, null, onComplete);
     }
 
     /* ================================================================
@@ -151,11 +119,13 @@ public final class Task implements Runnable {
      */
     @Override
     public void run() {
-        timingStore.recordStart(taskIndex, System.nanoTime());
+        startNanos = System.nanoTime();
         try {
-            workloadResult = workload.execute();
+            workloadResult = workload != null
+                    ? workload.execute()
+                    : CpuBoundWorkload.execute(workloadSeed, iterations);
         } finally {
-            timingStore.recordFinish(taskIndex, System.nanoTime());
+            finishNanos = System.nanoTime();
             if (completionLatch != null) {
                 completionLatch.countDown();
             }
@@ -173,45 +143,31 @@ public final class Task implements Runnable {
 
     /** Time the task spent waiting in the queue before a worker picked it up. */
     public long queueWaitTimeNanos() {
-        return startTimeNanos() - submitTimeNanos();
+        return startNanos - submitNanos;
     }
 
     /** Wall-clock time spent inside {@link Workload#execute()}. */
     public long executionTimeNanos() {
-        return finishTimeNanos() - startTimeNanos();
+        return finishNanos - startNanos;
     }
 
     /** End-to-end latency from submission to completion. */
     public long endToEndLatencyNanos() {
-        return finishTimeNanos() - submitTimeNanos();
+        return finishNanos - submitNanos;
     }
 
     /* ================================================================
      *  Accessors
      * ================================================================ */
 
-    public long             taskId()           { return taskId; }
-    public int              taskIndex()        { return taskIndex; }
-    public long             workloadResult()   { return workloadResult; }
-    public boolean          isMeasurement()    { return measurement; }
-    public TaskType         taskType()         { return taskType; }
-    public Workload         getWorkload()      { return workload; }
-    public CountDownLatch   getCompletionLatch() { return completionLatch; }
-
-    /** Reads submit timestamp from the backing {@link TaskTimingStore}. */
-    public long submitTimeNanos() {
-        return timingStore.submitTimeNanos(taskIndex);
-    }
-
-    /** Reads start timestamp from the backing {@link TaskTimingStore}. */
-    public long startTimeNanos() {
-        return timingStore.startTimeNanos(taskIndex);
-    }
-
-    /** Reads finish timestamp from the backing {@link TaskTimingStore}. */
-    public long finishTimeNanos() {
-        return timingStore.finishTimeNanos(taskIndex);
-    }
+    public long taskId() { return taskId; }
+    public TaskType type() { return type; }
+    public TaskType taskType() { return type; }
+    public int iterations() { return iterations; }
+    public long submitNanos() { return submitNanos; }
+    public long workloadResult() { return workloadResult; }
+    public boolean isMeasurement() { return measurement; }
+    public Workload workload() { return workload; }
 
     /* ================================================================
      *  Formatting

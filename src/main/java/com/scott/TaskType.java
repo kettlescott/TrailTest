@@ -1,22 +1,11 @@
 package com.scott;
 
 /**
- * Classification of benchmark tasks by expected execution duration.
+ * Logical workload types used by YAML task generation.
  *
- * <p>Used by {@link TypeAwareDispatcher} to route tasks to the most
- * appropriate execution backend:
- * <ul>
- *   <li>{@link #SHORT}  — lightweight work, best on a sharded queue
- *       (low contention, fast dequeue)</li>
- *   <li>{@link #MEDIUM} — moderate work, routed to the shared queue
- *       (benefits from work-stealing load balancing)</li>
- *   <li>{@link #LONG}   — heavy work, routed to the shared queue
- *       (avoids head-of-line blocking on a single shard)</li>
- * </ul>
- *
- * <p>Each constant carries a human-readable label and a multiplier that
- * {@link BenchmarkMain} uses to scale the calibrated iteration count,
- * producing workloads of different durations from the same base calibration.
+ * <p>Each type carries a label and an iteration multiplier. The generator
+ * applies the multiplier to calibrated base iterations to build short,
+ * medium, and long CPU-bound tasks.
  */
 public enum TaskType {
 
@@ -48,6 +37,18 @@ public enum TaskType {
      */
     public int iterationMultiplier() {
         return iterationMultiplier;
+    }
+
+    public static TaskType fromLabel(String value) {
+        if (value == null) {
+            throw new IllegalArgumentException("Task type is required");
+        }
+        for (TaskType type : values()) {
+            if (type.label.equalsIgnoreCase(value)) {
+                return type;
+            }
+        }
+        throw new IllegalArgumentException("Unknown task type: " + value + " (expected short|medium|long)");
     }
 }
 

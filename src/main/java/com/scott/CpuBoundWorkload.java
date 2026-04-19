@@ -40,6 +40,13 @@ public final class CpuBoundWorkload implements Workload {
      */
     @Override
     public long execute() {
+        return execute(seed, iterations);
+    }
+
+    /**
+     * Allocation-free helper for hot paths that already hold seed/iterations.
+     */
+    public static long execute(long seed, int iterations) {
         long x = seed;
         for (int i = 0; i < iterations; i++) {
             x ^= (x << 13);
