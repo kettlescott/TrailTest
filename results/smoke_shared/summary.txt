@@ -1,0 +1,15 @@
+runName=smoke_shared
+mode=shared
+workload=short_only
+submitted=2000
+durationSeconds=0.004
+throughput=514188.4 tasks/s
+backpressureEvents=496
+
+Recorded tasks: 2000
+
+Metric                  p50        p90        p95        p99
+------------------------------------------------------------
+Queue wait           0.004 ms     0.009 ms     0.012 ms     0.020 ms
+Execution            0.006 ms     0.006 ms     0.006 ms     0.006 ms
+End-to-end           0.011 ms     0.016 ms     0.019 ms     0.027 ms

@@ -118,7 +118,6 @@ public class PinningExample {
     private static void runDemo(ShardedExecutor executor, String label) throws Exception {
 
         final int taskCount = 16;
-        TaskTimingStore store = new TaskTimingStore(taskCount);
         java.util.concurrent.CountDownLatch latch =
                 new java.util.concurrent.CountDownLatch(taskCount);
 
@@ -126,8 +125,7 @@ public class PinningExample {
 
         for (int i = 0; i < taskCount; i++) {
             Workload w = new CpuBoundWorkload(0xCAFE + i, iterations);
-            Task task = new Task(i, i, w, store, latch, false);
-            store.recordSubmit(i, System.nanoTime());
+            Task task = new Task(i, TaskType.SHORT, iterations, System.nanoTime(), false, w, latch, null);
             executor.submit(task);
         }
 

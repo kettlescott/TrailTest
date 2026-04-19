@@ -1,0 +1,15 @@
+runName=smoke_jcmd
+mode=shared
+workload=short_only
+submitted=500
+durationSeconds=0.002
+throughput=253936.0 tasks/s
+backpressureEvents=264
+
+Recorded tasks: 500
+
+Metric                  p50        p90        p95        p99
+------------------------------------------------------------
+Queue wait           0.006 ms     0.007 ms     0.009 ms     0.017 ms
+Execution            0.006 ms     0.006 ms     0.007 ms     0.009 ms
+End-to-end           0.012 ms     0.013 ms     0.017 ms     0.023 ms
