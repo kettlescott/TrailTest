@@ -4,16 +4,25 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
+import com.scott.profiling.AsyncProfilerProfiler;
+import com.scott.profiling.CompositeProfiler;
+import com.scott.profiling.JfrProfiler;
+import com.scott.profiling.MeasurementContext;
+import com.scott.profiling.PerfProfiler;
+import com.scott.profiling.Profiler;
+import com.scott.profiling.ProfilingSession;
+import com.scott.profiling.RunMetadataWriter;
+
 /**
- * YAML-driven benchmark runner.
- *
- * <p>Primary entrypoint: {@code --config=<path>}. The runner loads YAML,
- * validates it, executes warmup and measurement for each run, and prints/
- * writes results to {@code results/<runName>/summary.txt}.
+ * YAML-driven benchmark runner. Profiling is driven by
+ * {@link ProfilingSession} — no profiler-specific code remains in this
+ * class apart from session construction.
  */
 public class BenchmarkMain {
 
@@ -63,10 +72,16 @@ public class BenchmarkMain {
 
         ProfilingConfig profiling = root.profiling() == null
                 ? new ProfilingConfig(false, "cli", "profile", "beforeMeasurement", "afterMeasurement",
-                "${runName}.jfr", null, null)
+                        "${runName}.jfr", null, null, null)
                 : root.profiling();
 
-        JfrController jfr = JfrController.create(profiling, run.name(), runDir);
+        ProfilingSession session = buildSession(profiling, run.name(), runDir);
+        Path jfrOutput  = jfrOutputPath(profiling, run.name(), runDir);
+        Path perfOutput = perfOutputPath(profiling, run.name(), runDir);
+        Path asyncOutput = asyncProfilerOutputPath(profiling, run.name(), runDir);
+
+        MeasurementContext ctx = new MeasurementContext(
+                run.name(), mode.name(), run.workload(), global.workerCount(), "");
 
         try {
             System.out.println("========================================");
@@ -84,6 +99,7 @@ public class BenchmarkMain {
 
             long taskId = 0L;
 
+            // 1. Warmup — profilers are NOT running.
             PhaseResult warmup = runPhase(dispatcher, generator, global.maxInflight(),
                     global.warmupSeconds() * 1_000_000_000L, false, 0, taskId);
             taskId = warmup.nextTaskId();
@@ -91,12 +107,19 @@ public class BenchmarkMain {
             System.out.printf("  Warmup done      : %,d tasks in %.3f s%n",
                     warmup.submitted(), warmup.elapsedNanos() / 1_000_000_000.0);
 
-            jfr.startBeforeMeasurement();
+            // 2. Start profilers and let startup noise settle.
+            session.start();
+            session.beforeMeasurement();
 
+            // 3. Measurement window, bracketed by JFR anchor events.
+            session.markMeasurementStart(ctx);
             PhaseResult measurement = runPhase(dispatcher, generator, global.maxInflight(),
                     global.measurementSeconds() * 1_000_000_000L, true, global.taskCount(), taskId);
+            session.markMeasurementStop(ctx);
 
-            jfr.stopAfterMeasurement();
+            // 4. Stop profilers BEFORE dispatcher shutdown so the 10–30 s
+            //    drain cost is never part of the recording.
+            session.stop();
 
             double measureSecs = measurement.elapsedNanos() / 1_000_000_000.0;
             double throughput = measurement.submitted() / Math.max(measureSecs, 1e-9);
@@ -130,15 +153,159 @@ public class BenchmarkMain {
             System.out.println();
             System.out.println(recorder.summary());
             System.out.printf("  Summary file     : %s%n", summaryPath);
-            if (jfr.outputFile() != null) {
-                System.out.printf("  JFR file         : %s%n", jfr.outputFile());
+            if (jfrOutput != null) {
+                System.out.printf("  JFR file         : %s%n", jfrOutput);
             }
+            if (perfOutput != null) {
+                boolean exists = Files.exists(perfOutput);
+                long sizeKB = exists ? (Files.size(perfOutput) / 1024) : 0;
+                System.out.printf("  perf file        : %s  (%s%s)%n",
+                        perfOutput,
+                        exists ? "exists" : "MISSING — perf failed to start; see .perf.log",
+                        exists ? ", " + sizeKB + " KiB" : "");
+                Path perfLog = runDir.resolve(run.name() + ".perf.log");
+                if (Files.exists(perfLog)) {
+                    System.out.printf("  perf log         : %s%n", perfLog);
+                }
+            } else {
+                System.out.println("  perf             : disabled (profiling.perf.enabled=false or non-Linux host)");
+            }
+            if (asyncOutput != null) {
+                boolean exists = Files.exists(asyncOutput);
+                long sizeKB = exists ? (Files.size(asyncOutput) / 1024) : 0;
+                System.out.printf("  async-profiler   : %s  (%s%s)%n",
+                        asyncOutput,
+                        exists ? "exists" : "MISSING — asprof failed; see .async.log",
+                        exists ? ", " + sizeKB + " KiB" : "");
+            }
+
+            // 5. Reproducibility metadata (outside the measurement window).
+            writeRunMetadata(runDir, run, global, mode, profiling, throughput,
+                    measurement.submitted(), measureSecs, jfrOutput, perfOutput, asyncOutput);
         } finally {
-            dispatcher.shutdown();
-            dispatcher.awaitTermination(30, TimeUnit.SECONDS);
-            jfr.close();
+            // Defensive: if anything above threw, still stop profilers first
+            // (idempotent) so cleanup time isn't recorded, then shut down
+            // the dispatcher.
+            try {
+                session.stop();
+            } catch (Exception ignore) {
+                /* best-effort on failure path */
+            } finally {
+                dispatcher.shutdown();
+                dispatcher.awaitTermination(30, TimeUnit.SECONDS);
+            }
         }
     }
+
+    /* ================================================================
+     *  Profiling session wiring
+     * ================================================================ */
+
+    private static ProfilingSession buildSession(ProfilingConfig profiling,
+                                                 String runName,
+                                                 Path runDir) {
+        if (profiling == null || !profiling.enabled()) {
+            return ProfilingSession.disabled();
+        }
+        List<Profiler> children = new ArrayList<>(3);
+
+        JfrProfiler.Control ctrl = "api".equalsIgnoreCase(profiling.control())
+                ? JfrProfiler.Control.API : JfrProfiler.Control.CLI;
+        Path jfrOut = runDir.resolve(profiling.filename().replace("${runName}", runName));
+        children.add(new JfrProfiler(ctrl, runName, profiling.settings(), jfrOut,
+                profiling.startCommand(), profiling.stopCommand()));
+
+        PerfConfig perf = profiling.perf();
+        if (perf != null && perf.enabled()) {
+            // Insert perf FIRST in start order so its window brackets JFR.
+            // CompositeProfiler stops in reverse order, so perf stops LAST —
+            // which is what we want for clean timeline alignment.
+            children.add(0, new PerfProfiler(perf, runName, runDir));
+        }
+
+        AsyncProfilerConfig async = profiling.asyncProfiler();
+        if (async != null && async.enabled()) {
+            // Append LAST: start order = [perf, jfr, async]; stop order =
+            // [async, jfr, perf]. async-profiler's window therefore sits
+            // strictly inside both JFR and perf, so its samples are always
+            // bracketed by the JFR measurement anchors used for alignment.
+            children.add(new AsyncProfilerProfiler(async, runName, runDir));
+        }
+
+        Profiler rootProfiler = children.size() == 1 ? children.get(0) : new CompositeProfiler(children);
+        return new ProfilingSession(rootProfiler,
+                profiling.startupQuietPeriodMs(),
+                profiling.shutdownFlushMs());
+    }
+
+    private static Path jfrOutputPath(ProfilingConfig p, String runName, Path runDir) {
+        if (p == null || !p.enabled()) return null;
+        return runDir.resolve(p.filename().replace("${runName}", runName));
+    }
+
+    private static Path perfOutputPath(ProfilingConfig p, String runName, Path runDir) {
+        if (p == null || !p.enabled() || p.perf() == null || !p.perf().enabled()) return null;
+        return runDir.resolve(p.perf().filenameOrDefault().replace("${runName}", runName));
+    }
+
+    private static Path asyncProfilerOutputPath(ProfilingConfig p, String runName, Path runDir) {
+        if (p == null || !p.enabled() || p.asyncProfiler() == null || !p.asyncProfiler().enabled()) return null;
+        return runDir.resolve(p.asyncProfiler().filenameOrDefault().replace("${runName}", runName));
+    }
+
+    private static void writeRunMetadata(Path runDir,
+                                         RunConfig run,
+                                         GlobalConfig global,
+                                         BenchmarkMode mode,
+                                         ProfilingConfig profiling,
+                                         double throughput,
+                                         int submitted,
+                                         double measureSecs,
+                                         Path jfrOutput,
+                                         Path perfOutput,
+                                         Path asyncOutput) throws java.io.IOException {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("mode",                 mode.name());
+        fields.put("workload",             run.workload());
+        fields.put("workerCount",          global.workerCount());
+        fields.put("maxInflight",          global.maxInflight());
+        fields.put("warmupSeconds",        global.warmupSeconds());
+        fields.put("measurementSeconds",   global.measurementSeconds());
+        fields.put("taskCount",            global.taskCount());
+        fields.put("submitted",            submitted);
+        fields.put("durationSeconds",      String.format("%.3f", measureSecs));
+        fields.put("throughputPerSecond",  String.format("%.1f", throughput));
+        fields.put("profilingEnabled",     profiling != null && profiling.enabled());
+        fields.put("profilingControl",     profiling == null ? "" : profiling.control());
+        fields.put("jfrSettings",          profiling == null ? "" : profiling.settings());
+        fields.put("jfrOutput",            jfrOutput == null ? "" : jfrOutput.toString());
+        if (profiling != null && profiling.perf() != null && profiling.perf().enabled()) {
+            PerfConfig pc = profiling.perf();
+            fields.put("perfEnabled",      true);
+            fields.put("perfFrequency",    pc.frequencyOrDefault());
+            fields.put("perfCallGraph",    pc.callGraphOrDefault());
+            fields.put("perfClock",        pc.clockOrDefault());
+            fields.put("perfOutput",       perfOutput == null ? "" : perfOutput.toString());
+        } else {
+            fields.put("perfEnabled",      false);
+        }
+        if (profiling != null && profiling.asyncProfiler() != null && profiling.asyncProfiler().enabled()) {
+            AsyncProfilerConfig ac = profiling.asyncProfiler();
+            fields.put("asyncProfilerEnabled",  true);
+            fields.put("asyncProfilerEvent",    ac.eventOrDefault());
+            fields.put("asyncProfilerInterval", ac.intervalOrDefault());
+            fields.put("asyncProfilerFormat",   ac.formatOrDefault());
+            fields.put("asyncProfilerOutput",   asyncOutput == null ? "" : asyncOutput.toString());
+        } else {
+            fields.put("asyncProfilerEnabled", false);
+        }
+        Path meta = RunMetadataWriter.write(runDir, run.name(), fields);
+        System.out.printf("  Metadata file    : %s%n", meta);
+    }
+
+    /* ================================================================
+     *  Phase execution (unchanged)
+     * ================================================================ */
 
     private static PhaseResult runPhase(Dispatcher dispatcher,
                                         TaskGenerator generator,

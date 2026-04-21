@@ -96,7 +96,7 @@ public final class BenchmarkConfigLoader {
     private static ProfilingConfig parseProfiling(Map<String, Object> map) {
         if (map == null) {
             return new ProfilingConfig(false, "cli", "profile", "beforeMeasurement", "afterMeasurement",
-                    "${runName}.jfr", null, null);
+                    "${runName}.jfr", null, null, 200L, 100L, null, null);
         }
         boolean enabled = boolVal(map, "enabled", false);
         String control = strVal(map, "control", "cli");
@@ -106,7 +106,49 @@ public final class BenchmarkConfigLoader {
         String filename = strVal(map, "filename", "${runName}.jfr");
         String startCommand = strVal(map, "startCommand", null);
         String stopCommand = strVal(map, "stopCommand", null);
-        return new ProfilingConfig(enabled, control, settings, start, stop, filename, startCommand, stopCommand);
+        long startupQuietPeriodMs = longVal(map, "startupQuietPeriodMs", 200L);
+        long shutdownFlushMs      = longVal(map, "shutdownFlushMs",      100L);
+        PerfConfig perf = parsePerf(map.get("perf"));
+        AsyncProfilerConfig async = parseAsyncProfiler(map.get("asyncProfiler"));
+        return new ProfilingConfig(enabled, control, settings, start, stop, filename,
+                startCommand, stopCommand, startupQuietPeriodMs, shutdownFlushMs, perf, async);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static AsyncProfilerConfig parseAsyncProfiler(Object raw) {
+        if (!(raw instanceof Map<?, ?> m)) return null;
+        Map<String, Object> am = (Map<String, Object>) m;
+        boolean aenabled = boolVal(am, "enabled", false);
+        String binary    = strVal(am, "binary",   "asprof");
+        String event     = strVal(am, "event",    "wall");
+        String interval  = strVal(am, "interval", "1ms");
+        String format    = strVal(am, "format",   "jfr");
+        String afile     = strVal(am, "filename", null);
+        List<String> extra = new ArrayList<>();
+        Object ea = am.get("extraArgs");
+        if (ea instanceof List<?> ealist) {
+            for (Object o : ealist) extra.add(String.valueOf(o));
+        }
+        return new AsyncProfilerConfig(aenabled, binary, event, interval, format, afile, extra);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static PerfConfig parsePerf(Object raw) {
+        if (!(raw instanceof Map<?, ?> m)) return null;
+        Map<String, Object> pm = (Map<String, Object>) m;
+        boolean penabled = boolVal(pm, "enabled", false);
+        String binary = strVal(pm, "binary", "perf");
+        Integer freq = pm.get("frequency") == null ? null : Integer.parseInt(String.valueOf(pm.get("frequency")));
+        String clock = strVal(pm, "clock", "monotonic");
+        String callGraph = strVal(pm, "callGraph", "fp");
+        String pfile = strVal(pm, "filename", "${runName}.perf.data");
+        Integer mmapPages = pm.get("mmapPages") == null ? null : Integer.parseInt(String.valueOf(pm.get("mmapPages")));
+        List<String> extra = new ArrayList<>();
+        Object ea = pm.get("extraArgs");
+        if (ea instanceof List<?> ealist) {
+            for (Object o : ealist) extra.add(String.valueOf(o));
+        }
+        return new PerfConfig(penabled, binary, freq, clock, callGraph, extra, pfile, mmapPages);
     }
 
     @SuppressWarnings("unchecked")
