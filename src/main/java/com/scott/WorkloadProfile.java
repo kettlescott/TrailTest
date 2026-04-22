@@ -13,7 +13,13 @@ import java.util.Map;
  *                       {@link #waitMicros}, {@link #waitMillis}</li>
  *   <li><b>memory</b> — {@link #arraySize}, {@link #steps},
  *                       {@link #accessPattern}</li>
+ *   <li><b>empty</b>  — no fields required (no-op baseline)</li>
  * </ul>
+ *
+ * <p>{@link #taskType} is an <em>optional</em> explicit override
+ * ({@code short|medium|long}) that, when set, forces the dispatcher-visible
+ * {@link TaskType} regardless of the resource-specific cost heuristic.
+ * It is orthogonal to resource semantics and valid for any resource type.
  */
 public record WorkloadProfile(
         Integer iterationsMultiplier,
@@ -22,11 +28,12 @@ public record WorkloadProfile(
         Long waitMillis,
         Integer arraySize,
         Integer steps,
-        String accessPattern
+        String accessPattern,
+        String taskType
 ) {
 
     public static WorkloadProfile empty() {
-        return new WorkloadProfile(null, null, null, null, null, null, null);
+        return new WorkloadProfile(null, null, null, null, null, null, null, null);
     }
 
     @SuppressWarnings("unchecked")
@@ -37,13 +44,14 @@ public record WorkloadProfile(
         }
         Map<String, Object> pm = (Map<String, Object>) m;
         return new WorkloadProfile(
-                asInt(pm, "iterationsMultiplier"),
-                asLong(pm, "waitNanos"),
-                asLong(pm, "waitMicros"),
-                asLong(pm, "waitMillis"),
-                asInt(pm, "arraySize"),
-                asInt(pm, "steps"),
-                asString(pm, "accessPattern")
+                asInt(pm,    "iterationsMultiplier"),
+                asLong(pm,   "waitNanos"),
+                asLong(pm,   "waitMicros"),
+                asLong(pm,   "waitMillis"),
+                asInt(pm,    "arraySize"),
+                asInt(pm,    "steps"),
+                asString(pm, "accessPattern"),
+                asString(pm, "taskType")
         );
     }
 
@@ -55,6 +63,16 @@ public record WorkloadProfile(
         if (waitMicros != null) { total += waitMicros * 1_000L;     any = true; }
         if (waitMillis != null) { total += waitMillis * 1_000_000L; any = true; }
         return any ? total : null;
+    }
+
+    /**
+     * Explicit task type from YAML ({@code profile.taskType}), or {@code null}
+     * when unset. Returns {@code null} for blank input; malformed values are
+     * rejected by {@link #validateFor}.
+     */
+    public TaskType explicitTaskType() {
+        if (taskType == null || taskType.isBlank()) return null;
+        return TaskType.fromLabel(taskType);
     }
 
     public void validateFor(WorkloadResourceType resource, String path) {
@@ -88,19 +106,36 @@ public record WorkloadProfile(
                             path + ".profile.accessPattern must be 'sequential' or 'random'");
                 }
             }
+            case EMPTY -> {
+                // No-op baseline: no resource-specific fields required.
+            }
             case MIXED -> throw new IllegalArgumentException(
                     path + ": 'mixed' has no top-level profile; use components[].profile");
+        }
+
+        // Optional explicit taskType override (any resource).
+        if (taskType != null && !taskType.isBlank()) {
+            try {
+                TaskType.fromLabel(taskType);
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException(
+                        path + ".profile.taskType: " + e.getMessage());
+            }
         }
     }
 
     public String summary(WorkloadResourceType resource) {
-        return switch (resource) {
+        String base = switch (resource) {
             case CPU    -> "iterationsMultiplier=" + iterationsMultiplier;
             case IO     -> "waitNanos=" + totalWaitNanos();
             case MEMORY -> "arraySize=" + arraySize + ", steps=" + steps
                     + ", accessPattern=" + accessPattern;
+            case EMPTY  -> "(empty / no-op)";
             case MIXED  -> "(mixed)";
         };
+        return (taskType == null || taskType.isBlank())
+                ? base
+                : base + ", taskType=" + taskType;
     }
 
     private static Integer asInt(Map<String, Object> m, String key) {

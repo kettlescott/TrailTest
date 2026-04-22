@@ -18,6 +18,10 @@ public final class SharedOnlyDispatcher implements Dispatcher {
 
     @Override
     public void submit(Task task) throws InterruptedException {
+        // Stamp the post-routing / pre-enqueue moment. Queue wait is
+        // measured from this stamp; any work done in submit() itself
+        // is attributed to "submit overhead" instead of "queue wait".
+        task.markEnqueued();
         executor.submit(task);
     }
 

@@ -28,7 +28,6 @@ final class BenchmarkFlags {
     /**
      * When {@code true}, enables:
      * <ul>
-     *   <li>Bounds checks in {@link TaskTimingStore} hot-path writers</li>
      *   <li>Per-submit task-list tracking in {@link SharedExecutor} and
      *       {@link ShardedExecutor} (for {@code getTasks()} diagnostics)</li>
      *   <li>Diagnostic logging in {@link ShardedWorker} (pinning result)</li>

@@ -47,10 +47,15 @@ public record WorkloadConfig(
                 throw new IllegalArgumentException(
                         path + ": resource='mixed' requires mode='mix'");
             }
+            // EMPTY workloads do not require a profile; any provided profile
+            // is still validated (e.g. optional taskType override).
             if (profile == null) {
-                throw new IllegalArgumentException(path + ".profile is required for single workloads");
+                if (rt != WorkloadResourceType.EMPTY) {
+                    throw new IllegalArgumentException(path + ".profile is required for single workloads");
+                }
+            } else {
+                profile.validateFor(rt, path);
             }
-            profile.validateFor(rt, path);
             if (components != null && !components.isEmpty()) {
                 throw new IllegalArgumentException(
                         path + ".components must be empty for single workloads");

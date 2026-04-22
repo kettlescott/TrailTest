@@ -24,8 +24,13 @@ public interface Dispatcher {
     /**
      * Submits a task for execution via this dispatcher's routing policy.
      *
-     * @param task the benchmark task — submit timestamp must already be
-     *             recorded in its {@link TaskTimingStore}
+     * <p>Implementations are expected to call {@link Task#markEnqueued()}
+     * on the task just before handing it to the backing executor so that
+     * {@link Task#queueWaitTimeNanos()} measures time actually spent in
+     * the queue (and not the dispatcher's own work).
+     *
+     * @param task the benchmark task — its {@code createdNanos} must
+     *             already have been set by the generator
      * @throws InterruptedException if the calling thread is interrupted
      *                              while waiting for queue space
      */

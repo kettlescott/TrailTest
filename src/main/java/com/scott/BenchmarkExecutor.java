@@ -28,10 +28,12 @@ public interface BenchmarkExecutor {
      * Submits a pre-built task for execution.
      *
      * <p>Implementations may block if the underlying queue is full
-     * (e.g.&nbsp;bounded {@code ArrayBlockingQueue} in sharded mode).
+     * (e.g.&nbsp;bounded queue variants). Task timing (start/finish) is
+     * recorded inside {@link Task#run()} by the worker thread.
      *
-     * @param task the benchmark task — submit timestamp must already be
-     *             recorded in its {@link TaskTimingStore}
+     * @param task the benchmark task — {@code createdNanos} (and
+     *             typically {@code enqueuedNanos}, set by the
+     *             {@link Dispatcher}) are already populated
      * @throws InterruptedException if the calling thread is interrupted
      *                              while waiting for queue space
      */

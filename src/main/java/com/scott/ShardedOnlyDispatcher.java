@@ -16,6 +16,7 @@ public final class ShardedOnlyDispatcher implements Dispatcher {
 
     @Override
     public void submit(Task task) throws InterruptedException {
+        task.markEnqueued();
         executor.submit(task);
     }
 

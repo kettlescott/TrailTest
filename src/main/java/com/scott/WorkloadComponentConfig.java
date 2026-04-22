@@ -33,7 +33,10 @@ public record WorkloadComponentConfig(
                     path + ".resource cannot be 'mixed' (no nested mixes)");
         }
         if (profile == null) {
-            throw new IllegalArgumentException(path + ".profile is required");
+            if (rt != WorkloadResourceType.EMPTY) {
+                throw new IllegalArgumentException(path + ".profile is required");
+            }
+            return;
         }
         profile.validateFor(rt, path);
     }

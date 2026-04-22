@@ -31,6 +31,10 @@ public final class TypeAwareDispatcher implements Dispatcher {
 
     @Override
     public void submit(Task task) throws InterruptedException {
+        // Stamp after the routing decision, before the backing enqueue:
+        // submit-overhead captures the switch + any hash/dispatch cost;
+        // queue-wait starts here and is pure sitting-in-queue time.
+        task.markEnqueued();
         switch (task.taskType()) {
             case SHORT  -> shardedExecutor.submit(task);
             case MEDIUM, LONG -> sharedExecutor.submit(task);

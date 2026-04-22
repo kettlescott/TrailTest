@@ -3,57 +3,47 @@ package com.scott;
 import java.util.concurrent.CountDownLatch;
 
 /**
- * A self-contained benchmark task that pairs a {@link Workload} with its
- * identity and full timing lifecycle.
+ * Benchmark task: pairs a Workload with identity and the full 4-stage
+ * timing lifecycle (created / enqueued / start / finish).
  *
- * <h3>Lifecycle</h3>
  * <pre>
- *   submit  →  timingStore.recordSubmit(taskIndex, now)   (caller, before enqueue)
- *       ↓
- *   queue   →  queue wait  = startTimeNanos − submitTimeNanos
- *       ↓
- *   run()   →  timingStore.recordStart  / recordFinish    (worker thread)
- *       ↓
- *   done    →  end-to-end  = finishTimeNanos − submitTimeNanos
+ *   createdNanos   : set by TaskGenerator, before dispatch/routing
+ *   enqueuedNanos  : set by Dispatcher, just before the backing
+ *                    executor enqueues the task (post-routing)
+ *   startNanos     : set by the worker thread, right before run()
+ *   finishNanos    : set by the worker thread, right after run()
+ *
+ *   submit/build overhead = enqueuedNanos - createdNanos
+ *   queue wait            = startNanos    - enqueuedNanos
+ *   execution             = finishNanos   - startNanos
+ *   end-to-end            = finishNanos   - createdNanos
  * </pre>
  *
- * <h3>Memory-visibility contract</h3>
- * <p>Timing data is written to a shared {@link TaskTimingStore} by the worker
- * thread and read by the main thread <em>after</em> all in-flight tasks have
- * completed (either via {@code completionLatch.await()} or Semaphore drain).
- * The synchronization action (latch countDown or Semaphore release)
- * establishes a happens-before relationship, so no {@code volatile} is needed
- * on any timing field or on {@code workloadResult}.</p>
+ * <p>If a caller path does not call {@link #markEnqueued()} (e.g. the
+ * convenience {@code submitNew} entry points), the enqueued timestamp
+ * falls back to {@code createdNanos}, so {@code queueWait} gracefully
+ * degrades to {@code startNanos - createdNanos}.
  *
- * <h3>Completion signaling</h3>
- * <p>Two optional completion mechanisms are supported:
- * <ul>
- *   <li>{@link CountDownLatch} — for per-batch closed-loop submission</li>
- *   <li>{@link Runnable} callback ({@code onComplete}) — for open-loop
- *       submission with Semaphore-gated backpressure</li>
- * </ul>
- * Both may be {@code null}; both are invoked in the {@code finally} block
- * of {@link #run()} so they fire even on workload failure.</p>
- *
- * <h3>Design rationale</h3>
- * <p>Timestamps are stored in pre-allocated {@code long[]} arrays inside
- * {@link TaskTimingStore} rather than in per-task object fields.  This
- * eliminates per-field {@code volatile} barriers on the hot path, avoids
- * extra object-header overhead, and improves cache locality when the
- * recorder iterates over results after the run.</p>
+ * <p>Memory visibility: plain {@code long} fields. The created/enqueued
+ * stamps are written by the submitting thread; start/finish/result by a
+ * single worker. Readers only touch these after the completion signal
+ * ({@link CountDownLatch#countDown()} or the {@code onComplete}
+ * callback's happens-before via a {@link java.util.concurrent.Semaphore}
+ * release), so no {@code volatile} is required.
  */
 public final class Task implements Runnable {
 
     private final long taskId;
     private final TaskType type;
     private final int iterations;
-    private final long submitNanos;
+    private final long createdNanos;
     private final boolean measurement;
     private final Workload workload;
     private final long workloadSeed;
     private final CountDownLatch completionLatch;
     private final Runnable onComplete;
 
+    private long enqueuedNanos;
     private long startNanos;
     private long finishNanos;
     private long workloadResult;
@@ -61,7 +51,7 @@ public final class Task implements Runnable {
     public Task(long taskId,
                 TaskType type,
                 int iterations,
-                long submitNanos,
+                long createdNanos,
                 boolean measurement,
                 Workload workload,
                 CountDownLatch completionLatch,
@@ -69,7 +59,7 @@ public final class Task implements Runnable {
         this.taskId = taskId;
         this.type = type == null ? TaskType.SHORT : type;
         this.iterations = iterations;
-        this.submitNanos = submitNanos;
+        this.createdNanos = createdNanos;
         this.measurement = measurement;
         this.workload = workload;
         this.workloadSeed = 0L;
@@ -80,14 +70,14 @@ public final class Task implements Runnable {
     public Task(long taskId,
                 TaskType type,
                 int iterations,
-                long submitNanos,
+                long createdNanos,
                 boolean measurement,
                 long workloadSeed,
                 Runnable onComplete) {
         this.taskId = taskId;
         this.type = type == null ? TaskType.SHORT : type;
         this.iterations = iterations;
-        this.submitNanos = submitNanos;
+        this.createdNanos = createdNanos;
         this.measurement = measurement;
         this.workload = null;
         this.workloadSeed = workloadSeed;
@@ -98,32 +88,26 @@ public final class Task implements Runnable {
     public Task(long taskId,
                 TaskType type,
                 int iterations,
-                long submitNanos,
+                long createdNanos,
                 boolean measurement,
                 Workload workload,
                 Runnable onComplete) {
-        this(taskId, type, iterations, submitNanos, measurement, workload, null, onComplete);
+        this(taskId, type, iterations, createdNanos, measurement, workload, null, onComplete);
     }
 
-    /* ================================================================
-     *  Execution
-     * ================================================================ */
-
     /**
-     * Records start time, executes the workload, records finish time.
-     *
-     * <p>Both the {@link CountDownLatch} (if present) and the
-     * {@code onComplete} callback (if present) are invoked in the
-     * {@code finally} block so they fire even on failure and establish
-     * the necessary happens-before edges for all preceding stores.
+     * Records the moment the task is about to be handed to the backing
+     * queue. Called on the submitting thread: one {@code System.nanoTime()}
+     * plus a plain store, no allocation.
      */
+    public void markEnqueued() {
+        this.enqueuedNanos = System.nanoTime();
+    }
+
     @Override
     public void run() {
         startNanos = System.nanoTime();
         try {
-            // New YAML-driven path always supplies a concrete Workload.
-            // The (workload==null) fallback is kept for legacy callers
-            // that still build Tasks from a raw (seed, iterations) pair.
             workloadResult = workload != null
                     ? workload.execute()
                     : CpuBoundWorkload.execute(workloadSeed, iterations);
@@ -138,43 +122,41 @@ public final class Task implements Runnable {
         }
     }
 
-    /* ================================================================
-     *  Latency queries (all in nanoseconds)
-     *
-     *  Each method delegates to timingStore — no per-task fields involved.
-     * ================================================================ */
-
-    /** Time the task spent waiting in the queue before a worker picked it up. */
-    public long queueWaitTimeNanos() {
-        return startNanos - submitNanos;
+    /** {@code enqueued - created}: dispatcher/routing cost. */
+    public long submitOverheadNanos() {
+        long e = enqueuedNanos == 0L ? createdNanos : enqueuedNanos;
+        return e - createdNanos;
     }
 
-    /** Wall-clock time spent inside {@link Workload#execute()}. */
+    /** {@code start - enqueued} (falls back to {@code start - created}). */
+    public long queueWaitTimeNanos() {
+        long base = enqueuedNanos == 0L ? createdNanos : enqueuedNanos;
+        return startNanos - base;
+    }
+
+    /** {@code finish - start}: time inside {@link Workload#execute()}. */
     public long executionTimeNanos() {
         return finishNanos - startNanos;
     }
 
-    /** End-to-end latency from submission to completion. */
+    /** {@code finish - created}: end-to-end latency. */
     public long endToEndLatencyNanos() {
-        return finishNanos - submitNanos;
+        return finishNanos - createdNanos;
     }
 
-    /* ================================================================
-     *  Accessors
-     * ================================================================ */
-
-    public long taskId() { return taskId; }
-    public TaskType type() { return type; }
-    public TaskType taskType() { return type; }
-    public int iterations() { return iterations; }
-    public long submitNanos() { return submitNanos; }
-    public long workloadResult() { return workloadResult; }
+    public long taskId()           { return taskId; }
+    public TaskType type()         { return type; }
+    public TaskType taskType()     { return type; }
+    public int iterations()        { return iterations; }
+    public long createdNanos()     { return createdNanos; }
+    /** @deprecated use {@link #createdNanos()}. */
+    @Deprecated public long submitNanos() { return createdNanos; }
+    public long enqueuedNanos()    { return enqueuedNanos; }
+    public long startNanos()       { return startNanos; }
+    public long finishNanos()      { return finishNanos; }
+    public long workloadResult()   { return workloadResult; }
     public boolean isMeasurement() { return measurement; }
-    public Workload workload() { return workload; }
-
-    /* ================================================================
-     *  Formatting
-     * ================================================================ */
+    public Workload workload()     { return workload; }
 
     private static double nsToMs(long ns) {
         return ns / 1_000_000.0;
@@ -183,11 +165,13 @@ public final class Task implements Runnable {
     @Override
     public String toString() {
         return String.format(
-                "[Task-%d]  queueWait=%.3f ms  execution=%.3f ms  endToEnd=%.3f ms",
+                "[Task-%d]  submitOverhead=%.3f ms  queueWait=%.3f ms  execution=%.3f ms  endToEnd=%.3f ms",
                 taskId,
+                nsToMs(submitOverheadNanos()),
                 nsToMs(queueWaitTimeNanos()),
                 nsToMs(executionTimeNanos()),
                 nsToMs(endToEndLatencyNanos())
         );
     }
 }
+

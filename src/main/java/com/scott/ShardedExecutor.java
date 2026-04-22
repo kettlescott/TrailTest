@@ -20,9 +20,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * there is no work stealing.
  *
  * <p>This is the direct counterpart of {@link SharedExecutor} for
- * queue-contention benchmarks: same {@link Task}, same timing model
- * ({@link TaskTimingStore}), same {@link LatencyRecorder} — the
- * <em>only</em> structural difference is the queue topology.
+ * queue-contention benchmarks: same {@link Task}, same 4-stage timing
+ * model (created / enqueued / start / finish — see {@link Task}), same
+ * {@link LatencyRecorder} — the <em>only</em> structural difference is
+ * the queue topology.
  *
  * <h3>Optional CPU core pinning</h3>
  * <p>The extended constructors accept an {@code enablePinning} flag and
@@ -239,19 +240,20 @@ public final class ShardedExecutor implements BenchmarkExecutor {
 
     /**
      * Convenience overload: builds a {@link Task} from an id and workload,
-     * stamps the submit time, and submits it.
+     * stamps the creation time, and submits it directly.
      *
-     * <p>A single-element {@link TaskTimingStore} is created internally.
-     * For benchmark runs prefer the {@link #submit(Task)} method with a
-     * pre-allocated shared store.
+     * <p>This path bypasses the {@link Dispatcher}, so
+     * {@link Task#markEnqueued()} is not called — queue-wait measurement
+     * will gracefully fall back to {@code start - created} for tasks
+     * submitted this way.
      *
      * @param taskId   unique task identifier
      * @param workload the workload to execute
      * @return the newly created {@link Task}
      */
     public Task submitNew(long taskId, Workload workload) throws InterruptedException {
-        long submitTime = System.nanoTime();
-        Task task = new Task(taskId, TaskType.SHORT, 1, submitTime, false, workload, (Runnable) null);
+        long createdNanos = System.nanoTime();
+        Task task = new Task(taskId, TaskType.SHORT, 1, createdNanos, false, workload, (Runnable) null);
         submit(task);
         return task;
     }

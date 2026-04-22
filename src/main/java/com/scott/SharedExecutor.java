@@ -21,7 +21,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>Deterministic worker thread names ({@code SharedWorker-0}, {@code SharedWorker-1}, …).</li>
  *   <li>{@link #getQueueSize()} exposes the current queue depth for external measurement.</li>
  *   <li>Every submitted {@link Task} self-records <em>start</em> and <em>finish</em>
- *       timestamps inside its own {@link Task#run()} method.</li>
+ *       timestamps inside its own {@link Task#run()} method. The
+ *       dispatcher is responsible for stamping {@code enqueuedNanos}
+ *       before calling {@link #submit(Task)}.</li>
  *   <li>Collected tasks are available through {@link #getTasks()} for latency analysis.</li>
  * </ul>
  */
@@ -93,19 +95,20 @@ public final class SharedExecutor implements BenchmarkExecutor {
 
     /**
      * Convenience overload: builds a {@link Task} from an id and workload,
-     * stamps the submit time, and submits it.
+     * stamps the creation time, and submits it directly.
      *
-     * <p>A single-element {@link TaskTimingStore} is created internally.
-     * For benchmark runs prefer the {@link #submit(Task)} method with a
-     * pre-allocated shared store.
+     * <p>This path bypasses the {@link Dispatcher}, so
+     * {@link Task#markEnqueued()} is not called — queue-wait measurement
+     * will gracefully fall back to {@code start - created} for tasks
+     * submitted this way.
      *
      * @param taskId   unique task identifier
      * @param workload the workload to execute
      * @return the newly created {@link Task}
      */
     public Task submitNew(long taskId, Workload workload) {
-        long submitTime = System.nanoTime();
-        Task task = new Task(taskId, TaskType.SHORT, 1, submitTime, false, workload, (Runnable) null);
+        long createdNanos = System.nanoTime();
+        Task task = new Task(taskId, TaskType.SHORT, 1, createdNanos, false, workload, (Runnable) null);
         submit(task);
         return task;
     }
