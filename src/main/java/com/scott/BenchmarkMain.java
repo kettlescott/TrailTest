@@ -89,6 +89,18 @@ public class BenchmarkMain {
             System.out.println("========================================");
             System.out.printf("  Mode             : %s%n", mode);
             System.out.printf("  Workload         : %s%n", run.workload());
+            System.out.printf("  Resource         : %s%n", workload.resourceType().label());
+            if (workload.isSingle()) {
+                System.out.printf("  Profile          : %s%n",
+                        workload.profile().summary(workload.resourceType()));
+            } else {
+                System.out.println("  Components       :");
+                for (WorkloadComponentConfig c : workload.components()) {
+                    System.out.printf("    - %-16s weight=%3d  resource=%-6s  %s%n",
+                            c.name(), c.weight(), c.resource(),
+                            c.profile().summary(c.resourceType()));
+                }
+            }
             System.out.printf("  Workers          : %d%n", global.workerCount());
             System.out.printf("  Max in-flight    : %d%n", global.maxInflight());
             System.out.printf("  Warmup           : %d s%n", global.warmupSeconds());
@@ -138,6 +150,7 @@ public class BenchmarkMain {
             summary.append("runName=").append(run.name()).append('\n');
             summary.append("mode=").append(run.mode()).append('\n');
             summary.append("workload=").append(run.workload()).append('\n');
+            appendWorkloadSummary(summary, workload);
             summary.append("submitted=").append(measurement.submitted()).append('\n');
             summary.append("durationSeconds=").append(String.format("%.3f", measureSecs)).append('\n');
             summary.append("throughput=").append(String.format("%.1f", throughput)).append(" tasks/s\n");
@@ -354,6 +367,25 @@ public class BenchmarkMain {
             case SHARDED -> new ShardedOnlyDispatcher(workerCount);
             default -> throw new IllegalArgumentException("Unsupported run mode for YAML execution: " + mode);
         };
+    }
+
+    private static void appendWorkloadSummary(StringBuilder sb, WorkloadConfig w) {
+        sb.append("workloadResource=").append(w.resourceType().label()).append('\n');
+        sb.append("workloadMode=").append(w.mode()).append('\n');
+        if (w.isSingle()) {
+            sb.append("workloadProfile=").append(w.profile().summary(w.resourceType())).append('\n');
+        } else {
+            sb.append("workloadGeneration=").append(w.generation()).append('\n');
+            int i = 0;
+            for (WorkloadComponentConfig c : w.components()) {
+                sb.append("component[").append(i++).append("]=")
+                        .append("name=").append(c.name())
+                        .append(", weight=").append(c.weight())
+                        .append(", resource=").append(c.resource())
+                        .append(", ").append(c.profile().summary(c.resourceType()))
+                        .append('\n');
+            }
+        }
     }
 
     private static Path parseConfigPath(String[] args) {

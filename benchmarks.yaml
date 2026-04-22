@@ -8,17 +8,53 @@ global:
   taskCount: 2000000
 
 workloads:
-  short_only:
-    kind: single
-    type: short
+  cpu_short:
+    resource: cpu
+    mode: single
+    profile:
+      iterationsMultiplier: 1
 
-  mixed_60_30_10:
-    kind: mix
-    distribution:
-      short: 60
-      medium: 30
-      long: 10
+  cpu_long:
+    resource: cpu
+    mode: single
+    profile:
+      iterationsMultiplier: 50
+
+  io_short:
+    resource: io
+    mode: single
+    profile:
+      waitMicros: 500
+
+  io_long:
+    resource: io
+    mode: single
+    profile:
+      waitMillis: 10
+
+  memory_scan:
+    resource: memory
+    mode: single
+    profile:
+      arraySize: 1048576
+      accessPattern: sequential
+      steps: 10000
+
+  mixed_cpu_io:
+    resource: mixed
+    mode: mix
     generation: shuffled
+    components:
+      - name: cpu_fast
+        weight: 60
+        resource: cpu
+        profile:
+          iterationsMultiplier: 1
+      - name: io_wait
+        weight: 40
+        resource: io
+        profile:
+          waitMillis: 2
 
 profiling:
   enabled: true
@@ -104,10 +140,18 @@ profiling:
     extraArgs: []
 
 runs:
-  - name: shared_short
+  - name: shared_cpu_short
     mode: shared
-    workload: short_only
+    workload: cpu_short
 
-  - name: sharded_short
+  - name: sharded_cpu_short
     mode: sharded
-    workload: short_only
+    workload: cpu_short
+
+  - name: shared_io_short
+    mode: shared
+    workload: io_short
+
+  - name: sharded_io_short
+    mode: sharded
+    workload: io_short

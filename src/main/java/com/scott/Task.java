@@ -121,6 +121,9 @@ public final class Task implements Runnable {
     public void run() {
         startNanos = System.nanoTime();
         try {
+            // New YAML-driven path always supplies a concrete Workload.
+            // The (workload==null) fallback is kept for legacy callers
+            // that still build Tasks from a raw (seed, iterations) pair.
             workloadResult = workload != null
                     ? workload.execute()
                     : CpuBoundWorkload.execute(workloadSeed, iterations);

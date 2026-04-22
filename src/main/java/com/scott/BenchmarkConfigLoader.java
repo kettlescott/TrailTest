@@ -74,21 +74,45 @@ public final class BenchmarkConfigLoader {
 
         Map<String, WorkloadConfig> workloads = new LinkedHashMap<>();
         for (Map.Entry<String, Object> entry : map.entrySet()) {
+            String name = entry.getKey();
             if (!(entry.getValue() instanceof Map<?, ?> workloadMap)) {
-                throw new IllegalArgumentException("workloads." + entry.getKey() + " must be a map");
+                throw new IllegalArgumentException("workloads." + name + " must be a map");
             }
             Map<String, Object> wm = (Map<String, Object>) workloadMap;
-            String kind = strVal(wm, "kind", null);
-            String type = strVal(wm, "type", null);
-            Map<String, Integer> distribution = null;
-            if (wm.get("distribution") instanceof Map<?, ?> distMap) {
-                distribution = new LinkedHashMap<>();
-                for (Map.Entry<?, ?> d : distMap.entrySet()) {
-                    distribution.put(String.valueOf(d.getKey()), Integer.parseInt(String.valueOf(d.getValue())));
+
+            // --- migration guard: reject the pre-refactor schema with an
+            //     explicit, actionable error message ---
+            if (wm.containsKey("kind") || wm.containsKey("type") || wm.containsKey("distribution")) {
+                throw new IllegalArgumentException(
+                        "workloads." + name + ": legacy fields 'kind'/'type'/'distribution' are no "
+                        + "longer supported. Use the new schema: resource=cpu|io|memory|mixed, "
+                        + "mode=single|mix, profile:{...}, and (for mix) components:[...]. "
+                        + "See README / ARCHITECTURE for examples.");
+            }
+
+            String resource   = strVal(wm, "resource",   null);
+            String mode       = strVal(wm, "mode",       null);
+            String generation = strVal(wm, "generation", null);
+            WorkloadProfile profile = wm.containsKey("profile")
+                    ? WorkloadProfile.fromMap(wm.get("profile"))
+                    : null;
+
+            List<WorkloadComponentConfig> components = null;
+            Object rawComps = wm.get("components");
+            if (rawComps != null) {
+                if (!(rawComps instanceof List<?> compList)) {
+                    throw new IllegalArgumentException(
+                            "workloads." + name + ".components must be a list");
+                }
+                components = new ArrayList<>();
+                for (int i = 0; i < compList.size(); i++) {
+                    components.add(WorkloadComponentConfig.fromMap(
+                            compList.get(i),
+                            "workloads." + name + ".components[" + i + "]"));
                 }
             }
-            String generation = strVal(wm, "generation", "shuffled");
-            workloads.put(entry.getKey(), new WorkloadConfig(kind, type, distribution, generation));
+
+            workloads.put(name, new WorkloadConfig(resource, mode, generation, profile, components));
         }
         return workloads;
     }
