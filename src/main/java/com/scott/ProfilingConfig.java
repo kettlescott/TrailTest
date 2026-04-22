@@ -8,8 +8,42 @@ public record ProfilingConfig(
         String stop,
         String filename,
         String startCommand,
-        String stopCommand
+        String stopCommand,
+        long startupQuietPeriodMs,
+        long shutdownFlushMs,
+        PerfConfig perf,
+        AsyncProfilerConfig asyncProfiler
 ) {
+    /** Back-compat constructor used by older call sites (no quiet/flush, no async). */
+    public ProfilingConfig(boolean enabled,
+                           String control,
+                           String settings,
+                           String start,
+                           String stop,
+                           String filename,
+                           String startCommand,
+                           String stopCommand,
+                           PerfConfig perf) {
+        this(enabled, control, settings, start, stop, filename,
+             startCommand, stopCommand, 200L, 100L, perf, null);
+    }
+
+    /** Back-compat constructor (pre-async-profiler callers). */
+    public ProfilingConfig(boolean enabled,
+                           String control,
+                           String settings,
+                           String start,
+                           String stop,
+                           String filename,
+                           String startCommand,
+                           String stopCommand,
+                           long startupQuietPeriodMs,
+                           long shutdownFlushMs,
+                           PerfConfig perf) {
+        this(enabled, control, settings, start, stop, filename,
+             startCommand, stopCommand, startupQuietPeriodMs, shutdownFlushMs, perf, null);
+    }
+
     public void validate() {
         if (!enabled) {
             return;
@@ -17,8 +51,8 @@ public record ProfilingConfig(
         if (control == null || control.isBlank()) {
             throw new IllegalArgumentException("profiling.control is required when profiling is enabled");
         }
-        if (!"cli".equalsIgnoreCase(control)) {
-            throw new IllegalArgumentException("profiling.control currently supports only 'cli'");
+        if (!"cli".equalsIgnoreCase(control) && !"api".equalsIgnoreCase(control)) {
+            throw new IllegalArgumentException("profiling.control must be 'cli' or 'api'");
         }
         if (settings == null || settings.isBlank()) {
             throw new IllegalArgumentException("profiling.settings is required when profiling is enabled");
@@ -44,6 +78,17 @@ public record ProfilingConfig(
         if (stopCommand != null && stopCommand.isBlank()) {
             throw new IllegalArgumentException("profiling.stopCommand must not be blank when provided");
         }
+        if (startupQuietPeriodMs < 0) {
+            throw new IllegalArgumentException("profiling.startupQuietPeriodMs must be >= 0");
+        }
+        if (shutdownFlushMs < 0) {
+            throw new IllegalArgumentException("profiling.shutdownFlushMs must be >= 0");
+        }
+        if (perf != null) {
+            perf.validate();
+        }
+        if (asyncProfiler != null) {
+            asyncProfiler.validate();
+        }
     }
 }
-

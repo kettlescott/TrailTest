@@ -3,39 +3,155 @@ global:
   maxInflight: 32
   seed: 3735928559
   targetTaskNanos: 100000
-  warmupSeconds: 3
-  measurementSeconds: 10
-  taskCount: 99999999
+  warmupSeconds: 10
+  measurementSeconds: 60
+  taskCount: 2000000
 
 workloads:
-  short_only:
-    kind: single
-    type: short
+  cpu_short:
+    resource: cpu
+    mode: single
+    profile:
+      iterationsMultiplier: 1
 
-  mixed_60_30_10:
-    kind: mix
-    distribution:
-      short: 60
-      medium: 30
-      long: 10
+  cpu_long:
+    resource: cpu
+    mode: single
+    profile:
+      iterationsMultiplier: 50
+
+  io_short:
+    resource: io
+    mode: single
+    profile:
+      waitMicros: 500
+
+  io_long:
+    resource: io
+    mode: single
+    profile:
+      waitMillis: 10
+
+  memory_scan:
+    resource: memory
+    mode: single
+    profile:
+      arraySize: 1048576
+      accessPattern: sequential
+      steps: 10000
+
+  mixed_cpu_io:
+    resource: mixed
+    mode: mix
     generation: shuffled
+    components:
+      - name: cpu_fast
+        weight: 60
+        resource: cpu
+        profile:
+          iterationsMultiplier: 1
+      - name: io_wait
+        weight: 40
+        resource: io
+        profile:
+          waitMillis: 2
 
 profiling:
   enabled: true
-  control: cli
+  control: api
   settings: profile
   start: beforeMeasurement
   stop: afterMeasurement
-  filename: ${runName}.jfr
-  startCommand: JFR.start name=${runName} settings=${settings} filename=${outputFile}
-  stopCommand: JFR.stop name=${runName} filename=${outputFile}
+  filename: "${runName}.jfr"
+  startCommand: "JFR.start name=${runName} settings=${settings} filename=${outputFile}"
+  stopCommand: "JFR.stop name=${runName} filename=${outputFile}"
+
+  perf:
+    enabled: true
+    binary: perf
+    # 99 Hz keeps dwarf-stack perf.data at a manageable size (~few hundred MB
+    # per run). Raise to 299/999 only if you really need finer time resolution
+    # and have plenty of disk — dwarf stacks copy up to 8 KiB of user stack
+    # per sample, so file size scales linearly with frequency.
+    frequency: 99
+    clock: monotonic
+    # DWARF stacks work without -XX:+PreserveFramePointer and are necessary
+    # to resolve AQS / LockSupport.park / futex frames correctly on Java 25.
+    callGraph: dwarf
+    mmapPages: 2048          # larger ring buffer: dwarf + many events = bursty writes
+    extraArgs:
+      - "--no-buildid"
+      - "--no-buildid-cache"
+      - "-z"                 # zstd-compress perf.data on the fly (~2-4x smaller)
+      # ---- Hardware counters: CPU work + memory hierarchy ----
+      # Answers: IPC, cache pressure, LLC traffic (→ queue cache-line bouncing)
+      - "-e"
+      - "cycles,instructions,cache-references,cache-misses,LLC-loads,LLC-load-misses"
+      # ---- Software events: kernel-side scheduler accounting ----
+      # Answers: how often threads leave CPU / are stolen across cores
+      - "-e"
+      - "context-switches,cpu-migrations"
+      # ---- Scheduler tracepoints: wakeup + switch timeline ----
+      # Answers: AQS park→unpark latency, who woke whom, off-CPU duration
+      - "-e"
+      - "sched:sched_switch,sched:sched_wakeup"
+      # ---- Futex syscall tracepoints: lock slowpath ----
+      # Answers: how many FUTEX_WAIT / FUTEX_WAKE, from which Java frames
+      - "-e"
+      - "syscalls:sys_enter_futex,syscalls:sys_exit_futex"
+    filename: "${runName}.perf.data"
+
+  # ----------------------------------------------------------------------
+  # async-profiler (asprof) — tail-latency root-cause analysis
+  #
+  # Why add this on top of perf:
+  #   perf -F 99 only sees ON-CPU threads. In the shared-vs-sharded
+  #   comparison, p99/p99.9 latency is dominated by OFF-CPU time:
+  #   AQS LockSupport.park, futex wait inside ReentrantLock, and GC
+  #   safepoint stalls. async-profiler's `wall` event samples every
+  #   live thread regardless of state, so these are finally visible
+  #   with full Java stacks.
+  #
+  # Time alignment:
+  #   asprof -o jfr uses System.nanoTime() — same clock as JFR and as
+  #   perf -k monotonic. The MeasurementAnchor events emitted by the
+  #   harness align all three timelines.
+  #
+  # Nesting (enforced by BenchmarkMain.buildSession):
+  #   start order = [perf, jfr, async]
+  #   stop  order = [async, jfr, perf]
+  #   → the async window sits strictly inside JFR and perf.
+  #
+  # Prerequisite: `asprof` on PATH. See HOW_TO_RUN.md § async-profiler.
+  # ----------------------------------------------------------------------
+  asyncProfiler:
+    enabled: true
+    binary: asprof           # or absolute path, e.g. /opt/async-profiler/bin/asprof
+    event: wall              # wall | cpu | lock | alloc | itimer
+    interval: 1ms            # 100us for sub-ms resolution (10x more samples)
+    format: jfr              # jfr | html | collapsed | tree
+    filename: "${runName}.async.jfr"
+    # extraArgs is passed verbatim to `asprof start` before the target PID.
+    # Empty by default → samples all threads. Common recipes:
+    #   ["-t"]                         split samples by thread in output
+    #   ["-I", "worker-*"]             include only worker threads
+    #   ["-X", "G1*", "-X", "VM*"]     exclude GC / VM threads
+    #   ["--cstack", "fp"]             deeper native stacks (needs +PreserveFramePointer)
+    extraArgs: []
 
 runs:
-  - name: shared_short
+  - name: shared_cpu_short
     mode: shared
-    workload: short_only
+    workload: cpu_short
 
-  - name: sharded_short
+  - name: sharded_cpu_short
     mode: sharded
-    workload: short_only
+    workload: cpu_short
 
+  - name: shared_io_short
+    mode: shared
+    workload: io_short
+
+  - name: sharded_io_short
+    mode: sharded
+    workload: io_short

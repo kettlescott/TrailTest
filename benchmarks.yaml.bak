@@ -1,0 +1,80 @@
+global:
+  workerCount: 16
+  maxInflight: 32
+  seed: 3735928559
+  targetTaskNanos: 100000
+  warmupSeconds: 3
+  measurementSeconds: 10
+  taskCount: 99999999
+
+workloads:
+  short_only:
+    kind: single
+    type: short
+
+  mixed_60_30_10:
+    kind: mix
+    distribution:
+      short: 60
+      medium: 30
+      long: 10
+    generation: shuffled
+
+profiling:
+  enabled: true
+  # 'api' uses the in-process jdk.jfr.Recording API (recommended):
+  #   - no external 'jcmd' binary required (works on JRE and slim containers)
+  #   - lower start/stop latency, no fork/exec, no PATH dependency
+  #   - identical recorded events as the cli path
+  # Switch to 'cli' only if you specifically need jcmd semantics.
+  control: api
+  settings: profile          # built-in JFR preset ('default' | 'profile') or path to a .jfc file
+  start: beforeMeasurement
+  stop: afterMeasurement
+  filename: ${runName}.jfr
+  # The two fields below are only used when control: cli
+  startCommand: JFR.start name=${runName} settings=${settings} filename=${outputFile}
+  stopCommand: JFR.stop name=${runName} filename=${outputFile}
+
+  # ---- Optional Linux perf integration ----
+  # Starts `perf record` immediately before JFR.start and stops it
+  # (with SIGINT, so perf.data is flushed cleanly) immediately after JFR.stop.
+  #
+  # Time alignment: clock MUST be one perf understands. Accepted values:
+  #   monotonic | monotonic_raw | realtime | boottime | tai
+  # 'monotonic' matches JFR's clock and System.nanoTime() on Linux.
+  # The legacy POSIX spelling 'CLOCK_MONOTONIC' is accepted and normalized.
+  #
+  # JVM flags required for usable Java stacks:
+  #   -XX:+UnlockDiagnosticVMOptions
+  #   -XX:+PreserveFramePointer        (needed for callGraph: fp)
+  #   -XX:+DumpPerfMapAtExit           (writes /tmp/perf-<pid>.map for symbol resolution)
+  #
+  # Kernel knobs (one-time, requires root):
+  #   sysctl -w kernel.perf_event_paranoid=1
+  #   sysctl -w kernel.kptr_restrict=0
+  #
+  # Linux only. On macOS this block is silently ignored unless enabled.
+  perf:
+    enabled: false
+    binary: perf                # or absolute path, e.g. /usr/lib/linux-tools/.../perf
+    frequency: 99               # Hz; low default keeps overhead ~sub-1%. Raise (e.g. 999) for deeper CPU profiles
+    clock: monotonic            # ALIGNMENT KEY — must match JFR's clock domain
+    callGraph: none             # none | fp | dwarf | lbr. 'none' = lowest overhead; use 'fp' with -XX:+PreserveFramePointer for stacks
+    mmapPages: 512              # per-CPU ring-buffer pages (power of two); raise if "LOST samples"
+    extraArgs:
+      - "--no-buildid"
+      - "--no-buildid-cache"
+      - "-e"
+      - "cycles,instructions,cache-misses,LLC-load-misses,branch-misses"               # e.g. ["-e", "cycles,instructions,cache-misses"]
+    filename: ${runName}.perf.data
+
+runs:
+  - name: shared_short
+    mode: shared
+    workload: short_only
+
+  - name: sharded_short
+    mode: sharded
+    workload: short_only
+
