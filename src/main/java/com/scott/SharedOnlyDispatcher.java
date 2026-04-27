@@ -40,6 +40,11 @@ public final class SharedOnlyDispatcher implements Dispatcher {
         return "SharedOnly";
     }
 
+    @Override
+    public int totalQueueSize() {
+        return executor.getQueueSize();
+    }
+
     /** Exposes the backing executor for diagnostics (queue distribution, counts). */
     public SharedExecutor executor() {
         return executor;

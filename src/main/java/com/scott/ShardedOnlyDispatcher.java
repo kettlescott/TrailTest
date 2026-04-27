@@ -35,6 +35,11 @@ public final class ShardedOnlyDispatcher implements Dispatcher {
         return "ShardedOnly";
     }
 
+    @Override
+    public int totalQueueSize() {
+        return executor.getTotalQueueSize();
+    }
+
     /** Exposes the backing executor for diagnostics (queue distribution, counts). */
     public ShardedExecutor executor() {
         return executor;

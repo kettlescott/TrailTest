@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit;
  * <ul>
  *   <li>{@link SharedOnlyDispatcher}  — all tasks → shared queue</li>
  *   <li>{@link ShardedOnlyDispatcher} — all tasks → sharded queues</li>
- *   <li>{@link TypeAwareDispatcher}   — route by {@link TaskType}</li>
+ *   <li>{@link HybridDispatcher}      — route by {@link WorkloadKind}</li>
  * </ul>
  */
 public interface Dispatcher {
@@ -52,8 +52,19 @@ public interface Dispatcher {
 
     /**
      * Returns a short human-readable label for this dispatcher
-     * (e.g.&nbsp;{@code "SharedOnly"}, {@code "TypeAware"}).
+     * (e.g.&nbsp;{@code "SharedOnly"}, {@code "Hybrid"}).
      */
     String label();
+
+    /**
+     * Returns the current total queue depth across <em>all</em> backing
+     * queues (sum of every shard / shared queue managed by this
+     * dispatcher). Used by the queue-depth sampler.
+     *
+     * <p>Returns {@code -1} when the implementation cannot expose this
+     * cheaply; callers should treat {@code -1} samples as "unknown" and
+     * skip them in averages.
+     */
+    default int totalQueueSize() { return -1; }
 }
 

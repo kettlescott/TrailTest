@@ -54,26 +54,67 @@ Minimal shape:
 
 ```yaml
 global:
-  workerCount: 16
-  maxInflight: 32
+  workerCount: 16        # total worker budget (used by shared/sharded modes)
+  maxInflight: 32        # bounded in-flight submission window
   seed: 3735928559
-  targetTaskNanos: 100000
   warmupSeconds: 3
   measurementSeconds: 10
-  taskCount: 0
+  taskCount: 0           # 0 = time-based (run for measurementSeconds)
 
+# ----------------------------------------------------------------------
+# Workload schema
+#
+# Each workload is a list of entries. Every entry MUST specify:
+#   kind         : CPU | MEMORY | IO
+#   targetMillis : desired wall-clock execution time per task (calibrated
+#                  for CPU/MEMORY at startup; LockSupport.parkNanos for IO)
+#   ratio        : fraction of generated tasks; ratios sum to 1.0
+#                  (or 100 — integer-percent inputs are auto-rescaled)
+# Optional:
+#   name         : human-readable label
+#   memory       : (only when kind=MEMORY) accessPattern / bufferMB / writeBack
+# ----------------------------------------------------------------------
 workloads:
-  short_only:
-    kind: single
-    type: short
+  cpu_1ms:
+    - { kind: CPU, targetMillis: 1, ratio: 1.0 }
 
-  mixed_60_30_10:
-    kind: mix
-    distribution:
-      short: 60
-      medium: 30
-      long: 10
-    generation: shuffled
+  io_2ms:
+    - { kind: IO, targetMillis: 2, ratio: 1.0 }
+
+  memory_random_64mb:
+    - kind: MEMORY
+      targetMillis: 5
+      ratio: 1.0
+      memory:
+        accessPattern: RANDOM   # SEQUENTIAL | RANDOM
+        bufferMB: 64            # working-set size; ladder: 8 / 64 / 256
+        writeBack: false        # default false — read-only avoids false sharing
+
+  mixed_realistic:
+    - { name: fast_cpu, kind: CPU,    targetMillis: 1,  ratio: 0.40 }
+    - { name: scan,    kind: MEMORY, targetMillis: 5,  ratio: 0.30 }
+    - { name: io_call, kind: IO,     targetMillis: 20, ratio: 0.30 }
+
+# ----------------------------------------------------------------------
+# Hybrid dispatcher routing policy
+#
+# REQUIRED for any run with mode=hybrid. There are NO built-in defaults:
+# every WorkloadKind (CPU, MEMORY, IO) must be mapped explicitly to
+# either SHARED or SHARDED. This makes routing policy a first-class
+# experimental variable. Per-run 'hybrid:' overrides the top-level one.
+#
+# Total hybrid workers = sharedWorkers + shardedWorkers. If this differs
+# from global.workerCount, the run still proceeds but a warning is
+# printed (apples-to-apples comparison with shared/sharded modes is
+# only meaningful when totals match).
+# ----------------------------------------------------------------------
+hybrid:
+  sharedWorkers: 8
+  shardedWorkers: 8
+  routing:
+    CPU:    SHARDED
+    MEMORY: SHARED
+    IO:     SHARED
 
 profiling:
   enabled: true
@@ -82,59 +123,173 @@ profiling:
   start: beforeMeasurement
   stop:  afterMeasurement
   filename: ${runName}.jfr
-  # Quiet period between profiler start and measurement-window open.
-  # Lets perf install kernel events and JFR flush its first chunk before
-  # benchmark samples begin. Default: 200 ms.
   startupQuietPeriodMs: 200
-  # Grace period between measurement-window close and profiler stop.
-  # Lets perf's per-CPU ring buffers drain to disk before SIGINT. Default: 100 ms.
   shutdownFlushMs: 100
-  # Only used when control: cli
   startCommand: JFR.start name=${runName} settings=${settings} filename=${outputFile}
   stopCommand:  JFR.stop  name=${runName} filename=${outputFile}
 
-  # Optional Linux perf integration (disabled by default)
   perf:
     enabled: false
     binary: perf
-    frequency: 99          # Hz; raise (e.g. 999) for deeper CPU profiles
-    clock: monotonic       # aligns perf samples with JFR / System.nanoTime
-    callGraph: none        # none | fp | dwarf | lbr
+    frequency: 99
+    clock: monotonic
+    callGraph: none
     mmapPages: 512
     extraArgs: []
     filename: ${runName}.perf.data
 
-runs:
-  - name: shared_short
-    mode: shared
-    workload: short_only
+  asyncProfiler:
+    enabled: false
+    binary: asprof
+    event: wall
+    interval: 1ms
+    format: jfr
+    filename: ${runName}.async.jfr
+    extraArgs: []
 
-  - name: sharded_mix
+runs:
+  - name: shared_cpu_1ms
+    mode: shared
+    workload: cpu_1ms
+
+  - name: sharded_cpu_1ms
     mode: sharded
-    workload: mixed_60_30_10
+    workload: cpu_1ms
+
+  - name: hybrid_policyA_mixed   # CPU=SHARDED, MEMORY=SHARED, IO=SHARED
+    mode: hybrid
+    workload: mixed_realistic
+    # Per-run override of the top-level hybrid block (optional).
+    hybrid:
+      sharedWorkers: 8
+      shardedWorkers: 8
+      routing:
+        CPU:    SHARDED
+        MEMORY: SHARED
+        IO:     SHARED
 ```
 
 ### Workloads
 
-- `single`: fixed type (`short|medium|long`)
-- `mix`: percentage distribution that must sum to `100`
-- `generation`: currently `shuffled`
+A workload is a **list of entries**, each describing one task class:
+
+| Field | Required | Notes |
+|---|---|---|
+| `kind` | yes | `CPU` \| `MEMORY` \| `IO` |
+| `targetMillis` | yes | Wall-clock target; calibrated at startup for CPU/MEMORY |
+| `ratio` | yes | Fraction; entries within a workload sum to ~1.0 (or 100) |
+| `name` | no | Display label in console / `summary.txt` |
+| `memory` | no | Only valid when `kind: MEMORY`; see below |
+
+**MEMORY knobs:**
+
+| Sub-field | Default | Notes |
+|---|---|---|
+| `accessPattern` | `SEQUENTIAL` | `SEQUENTIAL` (cache-friendly) or `RANDOM` (TLB / LLC pressure) |
+| `bufferMB` | `8` | Working-set size; useful ladder: 8 / 64 / 256 |
+| `writeBack` | `false` | Default read-only — avoids false sharing as a confounding variable |
+
+> **Removed in this version:** the legacy `kind: single|mix, type: short|medium|long, distribution: {...}` schema. Old YAML files are auto-translated with a `[legacy-yaml]` warning, but new configs should use the explicit `kind: CPU|MEMORY|IO` form above. `global.targetTaskNanos` is also deprecated (per-entry `targetMillis` supersedes it); if present in YAML it is ignored with a warning.
 
 ### Runs
 
-- `name`: output folder name
-- `mode`: `shared` or `sharded`
-- `workload`: key from `workloads`
+| Field | Required | Notes |
+|---|---|---|
+| `name` | yes | Output folder under `results/` |
+| `mode` | yes | `shared` \| `sharded` \| `hybrid` |
+| `workload` | yes | Key from the `workloads:` map |
+| `hybrid` | no | Per-run override of the top-level `hybrid:` block |
+
+`mode: hybrid` requires an effective `hybrid:` config (per-run override or top-level). Validation fails fast at load time if missing.
 
 ## Output Files
 
 For each run in `runs:`:
 
-- `results/<runName>/summary.txt`
+- `results/<runName>/summary.txt`               — see breakdown below
 - `results/<runName>/run.json`                  — reproducibility metadata (host, JVM, OS, config, outputs)
 - `results/<runName>/<runName>.jfr`             — when `profiling.enabled: true`
 - `results/<runName>/<runName>.perf.data`       — when `profiling.perf.enabled: true`
 - `results/<runName>/<runName>.perf.log`        — `perf record` stderr / launch diagnostics
+- `results/<runName>/<runName>.async.jfr`       — when `profiling.asyncProfiler.enabled: true`
+- `results/<runName>/<runName>.async.log`       — `asprof start`/`stop` stderr
+
+### `summary.txt` content
+
+Generated after each run, machine-friendly key=value lines plus formatted percentile tables:
+
+```
+runName=hybrid_policyA_mixed
+mode=hybrid
+workload=mixed_realistic
+workerBudget=16
+hybridTotalWorkers=16
+hybridSharedWorkers=8
+hybridShardedWorkers=8
+hybridRouting=CPU=SHARDED,MEMORY=SHARED,IO=SHARED
+
+workloadEntries=3
+entry[0]=name=fast_cpu, kind=CPU, targetMillis=1, ratio=0.4000
+entry[1]=name=scan, kind=MEMORY, targetMillis=5, ratio=0.3000, accessPattern=SEQUENTIAL, bufferMB=8, writeBack=false
+entry[2]=name=io_call, kind=IO, targetMillis=20, ratio=0.3000
+
+calibrationEntries=3
+calibration[0]=name=fast_cpu, kind=CPU, targetMillis=1, cpuIterations=4923
+calibration[1]=name=scan, kind=MEMORY, targetMillis=5, memorySteps=78912, bufferMB=8, accessPattern=SEQUENTIAL, writeBack=false
+calibration[2]=name=io_call, kind=IO, targetMillis=20  (no calibration; parkNanos)
+
+submitted=600000
+submitDurationSeconds=10.000
+drainDurationSeconds=2.314
+totalDurationSeconds=12.314
+submittedPerSecond=60000.0
+completedPerSecond=48725.3
+backpressureEvents=42
+backpressureWaitMillis=11.728
+avgQueueDepth=14.21
+maxQueueDepth=64
+queueDepthSamples=1000
+
+=== Latency: overall ===
+Recorded tasks: 600000
+
+Metric            p50        p90        p95        p99        max
+------------------------------------------------------------------------
+Submit overhead   0.001 ms   0.002 ms   0.003 ms   0.012 ms   3.117 ms
+Queue wait        0.083 ms   0.412 ms   0.881 ms   2.140 ms  18.402 ms
+Execution         1.024 ms   5.014 ms   5.301 ms  20.108 ms  21.880 ms
+End-to-end        1.110 ms   5.502 ms   6.281 ms  22.443 ms  37.117 ms
+
+=== Latency: CPU ===
+... (same table, CPU-only samples)
+=== Latency: MEMORY ===
+... (same table, MEMORY-only samples)
+=== Latency: IO ===
+... (same table, IO-only samples)
+
+perKind.CPU.count=240118
+perKind.CPU.queueWaitMs.p50=0.041, p95=0.117, p99=0.502
+perKind.CPU.executionMs.p50=1.012, p95=1.092, p99=1.221
+perKind.CPU.endToEndMs.p50=1.057, p95=1.220, p99=1.733
+... (MEMORY, IO blocks)
+```
+
+Key fields for cross-mode comparison:
+
+| Field | Meaning |
+|---|---|
+| `workerBudget` | `global.workerCount` — the apples-to-apples budget across modes |
+| `hybridTotalWorkers` | `hybrid.sharedWorkers + hybrid.shardedWorkers` — should equal `workerBudget` for fair comparison |
+| `hybridRouting` | Compact policy string, e.g. `CPU=SHARDED,MEMORY=SHARED,IO=SHARED` |
+| `submitDurationSeconds` | Wall time submitting the measurement task stream |
+| `drainDurationSeconds` | Wall time waiting for in-flight tasks to finish *(excluded from profiling windows)* |
+| `totalDurationSeconds` | `submit + drain` |
+| `submittedPerSecond` | Throughput against the submit window (input rate) |
+| `completedPerSecond` | Throughput against total wall time (sustained rate) |
+| `backpressureWaitMillis` | Total time the submitter blocked on `permits.acquire()` |
+| `avgQueueDepth` / `maxQueueDepth` | Sampled at 10 ms intervals during the **submit window only** |
+| `calibration[i]` | Actual calibrated `cpuIterations` / `memorySteps` for reproducibility |
+| `perKind.<KIND>.{queueWait,execution,endToEnd}Ms.{p50,p95,p99}` | Per-WorkloadKind percentiles (essential for hybrid policy comparison) |
 
 ---
 
@@ -149,8 +304,10 @@ For each run in `runs:`:
 
 ### Lifecycle (both modes)
 
-- `start: beforeMeasurement` — recording opens immediately **after warmup**, before the measurement phase.
-- `stop:  afterMeasurement`  — recording closes immediately **after** the measurement phase **and before dispatcher shutdown**, so the 10–30 s drain/cleanup is never part of the recording.
+- `start: beforeMeasurement` — recording opens immediately **after warmup**, before the first measurement-phase submit.
+- `stop:  afterMeasurement`  — recording closes at **`submitEnd`** (the moment the last measurement task is handed to the dispatcher), **before** the post-submit drain. This window is the **submit window only**: the 10–30 s drain is never part of any profiler recording.
+
+Implementation: `runPhase()` invokes a callback at `submitEnd` that emits the JFR `stop` anchor, stops the queue-depth sampler, and calls `ProfilingSession.stop()` — all before the drain begins. The outer `finally` block calls `stop()` again as a safety net; `ProfilingSession.stop()` is idempotent so the second call is a no-op on the happy path.
 
 ### Anchor events
 
@@ -158,10 +315,10 @@ At the instant the recording opens and closes, the session emits one JFR event o
 
 - `phase` — `"start"` or `"stop"`
 - `runId` — matches the `name:` in `runs:`
-- `benchmarkMode` — `SHARED` | `SHARDED`
+- `benchmarkMode` — `SHARED` | `SHARDED` | `HYBRID`
 - `workloadType` — workload key from YAML
 - `workerCount`
-- `note`
+- `note` — for HYBRID runs this carries the routing policy string (e.g. `CPU=SHARDED,MEMORY=SHARED,IO=SHARED`); empty otherwise
 - `nanoTime` — `System.nanoTime()` at the boundary (same clock as `perf -k monotonic`)
 - `epochMillis` — wall-clock milliseconds
 
@@ -447,7 +604,10 @@ When `asyncProfiler.enabled: true`:
 | Java stacks 1 frame deep with `callGraph: fp` | Frame pointers not preserved | Add `-XX:+PreserveFramePointer`, or switch to `callGraph: dwarf`. |
 | `LOST X chunks` in perf log | Ring buffer too small for sample rate × cores | Raise `profiling.perf.mmapPages` (must be a positive power of two). |
 | `perf.data` appears truncated | `perf` killed with SIGTERM instead of SIGINT | Should not happen — the recorder sends SIGINT. If reproduced, file a bug with the log. |
-| Recording seems to include dispatcher shutdown | Old code path | Rebuild; current `BenchmarkMain` closes profiling before `dispatcher.shutdown()`. |
+| Recording seems to include dispatcher shutdown | Old code path | Rebuild; current `BenchmarkMain` closes profiling at `submitEnd`, before drain. |
+| `*** WARNING: hybrid.sharedWorkers + hybrid.shardedWorkers (N) != global.workerCount (M)` | Hybrid pool size doesn't match the cross-mode budget | For apples-to-apples comparison with `shared`/`sharded` runs, set `sharedWorkers + shardedWorkers == global.workerCount`. The run still proceeds. |
+| `mode=hybrid requires a hybrid config` (validation error at YAML load) | Missing `hybrid:` block | Add a top-level `hybrid:` section, or a per-run `hybrid:` override, mapping every `WorkloadKind` (CPU, MEMORY, IO) to `SHARED` or `SHARDED`. |
+| `[yaml] global.targetTaskNanos is deprecated and ignored` | Old YAML still has `global.targetTaskNanos` | Remove it; task sizing is per-entry via `targetMillis`. |
 
 ---
 
@@ -461,21 +621,25 @@ BenchmarkMain
     ▼
 ProfilingSession  ── wraps ──►  Profiler (interface)
                                   │
-                                  ├─► JfrProfiler       (API | CLI)
-                                  ├─► PerfProfiler      (Linux only)
-                                  └─► CompositeProfiler (ordered list)
+                                  ├─► JfrProfiler           (API | CLI)
+                                  ├─► PerfProfiler          (Linux only)
+                                  ├─► AsyncProfilerProfiler (cross-platform)
+                                  └─► CompositeProfiler     (ordered list)
 ```
 
 Lifecycle, in order:
 
 1. `session.start()` — starts each profiler in insertion order; rolls back in reverse order on any failure.
 2. `session.beforeMeasurement()` — sleeps `startupQuietPeriodMs` so perf kernel-event install and JFR first-chunk flush don't bleed into the measurement window.
-3. `session.markMeasurementStart(ctx)` — emits one `com.scott.MeasurementAnchor` JFR event (phase=`"start"`).
+3. `session.markMeasurementStart(ctx)` — emits one `com.scott.MeasurementAnchor` JFR event (phase=`"start"`) at `submitStart`.
 4. Measurement loop runs. **No profiling code on the hot path.**
-5. `session.markMeasurementStop(ctx)` — emits the matching phase=`"stop"` anchor.
-6. `session.stop()` — optional `shutdownFlushMs` sleep, then stops profilers in reverse order (perf last, so its timeline brackets JFR's).
+5. At `submitEnd` (last task submitted, drain not yet started), the `runPhase` `onSubmitEnd` callback fires and:
+   - emits the matching phase=`"stop"` anchor via `session.markMeasurementStop(ctx)`,
+   - stops the queue-depth sampler,
+   - calls `session.stop()` — optional `shutdownFlushMs` sleep, then stops profilers in reverse order (perf last, so its timeline brackets JFR's).
+6. Dispatcher drain proceeds. **No profiler / sampler observes it.** The outer `finally` block calls `session.stop()` again as a safety net; the call is idempotent and a no-op on the happy path.
 
-Profilers stop **before** `dispatcher.shutdown()`, so 10–30 s of drain/cleanup is never attributed to the benchmark.
+Profilers stop **before** drain (and therefore before `dispatcher.shutdown()`), so 10–30 s of drain/cleanup is never attributed to the benchmark.
 
 ### `run.json`
 
@@ -483,22 +647,37 @@ Written once per run, outside the measurement window. Used for reproducibility:
 
 ```json
 {
-  "runId": "shared_short",
+  "runId": "hybrid_policyA_mixed",
   "timestamp": "2026-04-21T12:34:56Z",
   "hostname": "...",
   "os.name": "Linux",
   "jvm.version": "25",
   "cpu.cores": 16,
-  "mode": "SHARED",
-  "workload": "short_only",
+  "mode": "HYBRID",
+  "workload": "mixed_realistic",
+  "workerBudget": 16,
   "workerCount": 16,
-  "throughputPerSecond": "881269.0",
-  "perfEnabled": true,
-  "perfFrequency": 99,
-  "perfCallGraph": "dwarf",
-  "perfClock": "monotonic",
-  "jfrOutput": "results/shared_short/shared_short.jfr",
-  "perfOutput": "results/shared_short/shared_short.perf.data"
+  "maxInflight": 32,
+  "warmupSeconds": 3,
+  "measurementSeconds": 10,
+  "taskCount": 0,
+  "submitted": 600000,
+  "submitDurationSeconds": "10.000",
+  "drainDurationSeconds":  "2.314",
+  "totalDurationSeconds":  "12.314",
+  "submittedPerSecond":    "60000.0",
+  "completedPerSecond":    "48725.3",
+  "avgQueueDepth":         "14.21",
+  "maxQueueDepth":         64,
+  "hybridTotalWorkers":    16,
+  "hybridSharedWorkers":   8,
+  "hybridShardedWorkers":  8,
+  "hybridRouting":         "CPU=SHARDED,MEMORY=SHARED,IO=SHARED",
+  "profilingEnabled":      true,
+  "jfrSettings":           "profile",
+  "jfrOutput":             "results/hybrid_policyA_mixed/hybrid_policyA_mixed.jfr",
+  "perfEnabled":           false,
+  "asyncProfilerEnabled":  false
 }
 ```
 
@@ -506,14 +685,4 @@ Written once per run, outside the measurement window. Used for reproducibility:
 
 ## PinningExample (Optional)
 
-CPU pinning demo remains separate from YAML benchmark runs:
-
-```bash
-mvn -DskipTests exec:java -Dexec.mainClass=com.scott.PinningExample
-```
-
-Direct `java` form:
-
-```bash
-java --enable-preview --enable-native-access=ALL-UNNAMED -cp target/classes com.scott.PinningExample
-```
+Removed in the latest cleanup pass — `PinningExample.java` is no longer part of the source tree. CPU pinning itself is still available to `ShardedExecutor` via its `(workerCount, enablePinning, coreMap)` constructor; benchmark runs do not currently expose it via YAML. To experiment with pinning, instantiate `ShardedExecutor` directly from a small ad-hoc driver.

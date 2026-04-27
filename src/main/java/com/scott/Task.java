@@ -3,8 +3,9 @@ package com.scott;
 import java.util.concurrent.CountDownLatch;
 
 /**
- * Benchmark task: pairs a Workload with identity and the full 4-stage
- * timing lifecycle (created / enqueued / start / finish).
+ * Benchmark task: pairs a {@link Workload} with identity, dispatch
+ * metadata ({@link WorkloadKind}, {@code targetMillis}), and the full
+ * 4-stage timing lifecycle (created / enqueued / start / finish).
  *
  * <pre>
  *   createdNanos   : set by TaskGenerator, before dispatch/routing
@@ -18,28 +19,15 @@ import java.util.concurrent.CountDownLatch;
  *   execution             = finishNanos   - startNanos
  *   end-to-end            = finishNanos   - createdNanos
  * </pre>
- *
- * <p>If a caller path does not call {@link #markEnqueued()} (e.g. the
- * convenience {@code submitNew} entry points), the enqueued timestamp
- * falls back to {@code createdNanos}, so {@code queueWait} gracefully
- * degrades to {@code startNanos - createdNanos}.
- *
- * <p>Memory visibility: plain {@code long} fields. The created/enqueued
- * stamps are written by the submitting thread; start/finish/result by a
- * single worker. Readers only touch these after the completion signal
- * ({@link CountDownLatch#countDown()} or the {@code onComplete}
- * callback's happens-before via a {@link java.util.concurrent.Semaphore}
- * release), so no {@code volatile} is required.
  */
 public final class Task implements Runnable {
 
     private final long taskId;
-    private final TaskType type;
-    private final int iterations;
+    private final WorkloadKind workloadKind;
+    private final long targetMillis;
     private final long createdNanos;
     private final boolean measurement;
     private final Workload workload;
-    private final long workloadSeed;
     private final CountDownLatch completionLatch;
     private final Runnable onComplete;
 
@@ -49,58 +37,57 @@ public final class Task implements Runnable {
     private long workloadResult;
 
     public Task(long taskId,
-                TaskType type,
-                int iterations,
+                WorkloadKind workloadKind,
+                long targetMillis,
                 long createdNanos,
                 boolean measurement,
                 Workload workload,
                 CountDownLatch completionLatch,
                 Runnable onComplete) {
+        if (workload == null) {
+            throw new IllegalArgumentException("Task requires a non-null Workload");
+        }
+        if (workloadKind == null) {
+            throw new IllegalArgumentException("Task requires a non-null workloadKind");
+        }
         this.taskId = taskId;
-        this.type = type == null ? TaskType.SHORT : type;
-        this.iterations = iterations;
+        this.workloadKind = workloadKind;
+        this.targetMillis = targetMillis;
         this.createdNanos = createdNanos;
         this.measurement = measurement;
         this.workload = workload;
-        this.workloadSeed = 0L;
         this.completionLatch = completionLatch;
         this.onComplete = onComplete;
     }
 
     public Task(long taskId,
-                TaskType type,
-                int iterations,
-                long createdNanos,
-                boolean measurement,
-                long workloadSeed,
-                Runnable onComplete) {
-        this.taskId = taskId;
-        this.type = type == null ? TaskType.SHORT : type;
-        this.iterations = iterations;
-        this.createdNanos = createdNanos;
-        this.measurement = measurement;
-        this.workload = null;
-        this.workloadSeed = workloadSeed;
-        this.completionLatch = null;
-        this.onComplete = onComplete;
-    }
-
-    public Task(long taskId,
-                TaskType type,
-                int iterations,
+                WorkloadKind workloadKind,
+                long targetMillis,
                 long createdNanos,
                 boolean measurement,
                 Workload workload,
                 Runnable onComplete) {
-        this(taskId, type, iterations, createdNanos, measurement, workload, null, onComplete);
+        this(taskId, workloadKind, targetMillis, createdNanos, measurement, workload, null, onComplete);
     }
 
     /**
      * Records the moment the task is about to be handed to the backing
-     * queue. Called on the submitting thread: one {@code System.nanoTime()}
-     * plus a plain store, no allocation.
+     * queue.
+     *
+     * <p>Must be called exactly once, by the top-level
+     * {@link Dispatcher} only. Calling twice (e.g. by a wrapper
+     * dispatcher and an inner one) would overwrite {@code enqueuedNanos}
+     * and corrupt {@link #queueWaitTimeNanos()}; we fail fast in that
+     * case so the bug is caught immediately rather than producing
+     * silently wrong percentiles.
      */
     public void markEnqueued() {
+        if (this.enqueuedNanos != 0L) {
+            throw new IllegalStateException(
+                    "Task.markEnqueued() called more than once for taskId=" + taskId
+                            + " — only the top-level Dispatcher must stamp enqueuedNanos. "
+                            + "Backing executors (SharedExecutor, ShardedExecutor) must NOT call markEnqueued().");
+        }
         this.enqueuedNanos = System.nanoTime();
     }
 
@@ -108,9 +95,7 @@ public final class Task implements Runnable {
     public void run() {
         startNanos = System.nanoTime();
         try {
-            workloadResult = workload != null
-                    ? workload.execute()
-                    : CpuBoundWorkload.execute(workloadSeed, iterations);
+            workloadResult = workload.execute();
         } finally {
             finishNanos = System.nanoTime();
             if (completionLatch != null) {
@@ -122,51 +107,42 @@ public final class Task implements Runnable {
         }
     }
 
-    /** {@code enqueued - created}: dispatcher/routing cost. */
     public long submitOverheadNanos() {
         long e = enqueuedNanos == 0L ? createdNanos : enqueuedNanos;
         return e - createdNanos;
     }
 
-    /** {@code start - enqueued} (falls back to {@code start - created}). */
     public long queueWaitTimeNanos() {
         long base = enqueuedNanos == 0L ? createdNanos : enqueuedNanos;
         return startNanos - base;
     }
 
-    /** {@code finish - start}: time inside {@link Workload#execute()}. */
     public long executionTimeNanos() {
         return finishNanos - startNanos;
     }
 
-    /** {@code finish - created}: end-to-end latency. */
     public long endToEndLatencyNanos() {
         return finishNanos - createdNanos;
     }
 
-    public long taskId()           { return taskId; }
-    public TaskType type()         { return type; }
-    public TaskType taskType()     { return type; }
-    public int iterations()        { return iterations; }
-    public long createdNanos()     { return createdNanos; }
-    /** @deprecated use {@link #createdNanos()}. */
-    @Deprecated public long submitNanos() { return createdNanos; }
-    public long enqueuedNanos()    { return enqueuedNanos; }
-    public long startNanos()       { return startNanos; }
-    public long finishNanos()      { return finishNanos; }
-    public long workloadResult()   { return workloadResult; }
-    public boolean isMeasurement() { return measurement; }
-    public Workload workload()     { return workload; }
+    public long taskId()              { return taskId; }
+    public WorkloadKind workloadKind(){ return workloadKind; }
+    public long targetMillis()        { return targetMillis; }
+    public long createdNanos()        { return createdNanos; }
+    public long enqueuedNanos()       { return enqueuedNanos; }
+    public long startNanos()          { return startNanos; }
+    public long finishNanos()         { return finishNanos; }
+    public long workloadResult()      { return workloadResult; }
+    public boolean isMeasurement()    { return measurement; }
+    public Workload workload()        { return workload; }
 
-    private static double nsToMs(long ns) {
-        return ns / 1_000_000.0;
-    }
+    private static double nsToMs(long ns) { return ns / 1_000_000.0; }
 
     @Override
     public String toString() {
         return String.format(
-                "[Task-%d]  submitOverhead=%.3f ms  queueWait=%.3f ms  execution=%.3f ms  endToEnd=%.3f ms",
-                taskId,
+                "[Task-%d kind=%s target=%dms]  submitOverhead=%.3f ms  queueWait=%.3f ms  execution=%.3f ms  endToEnd=%.3f ms",
+                taskId, workloadKind, targetMillis,
                 nsToMs(submitOverheadNanos()),
                 nsToMs(queueWaitTimeNanos()),
                 nsToMs(executionTimeNanos()),

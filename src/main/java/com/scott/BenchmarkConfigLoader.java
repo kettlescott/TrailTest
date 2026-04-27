@@ -34,9 +34,10 @@ public final class BenchmarkConfigLoader {
             GlobalConfig global = parseGlobal((Map<String, Object>) root.get("global"));
             Map<String, WorkloadConfig> workloads = parseWorkloads((Map<String, Object>) root.get("workloads"));
             ProfilingConfig profiling = parseProfiling((Map<String, Object>) root.get("profiling"));
+            HybridConfig hybrid = parseHybrid((Map<String, Object>) root.get("hybrid"), "hybrid");
             List<RunConfig> runs = parseRuns((List<Object>) root.get("runs"));
 
-            RootConfig config = new RootConfig(global, workloads, profiling, runs);
+            RootConfig config = new RootConfig(global, workloads, profiling, hybrid, runs);
             config.validate();
             return config;
         }
@@ -49,20 +50,20 @@ public final class BenchmarkConfigLoader {
         int workerCount = intVal(map, "workerCount", Runtime.getRuntime().availableProcessors());
         int maxInflight = intVal(map, "maxInflight", workerCount * 2);
         long seed = longVal(map, "seed", 0xDEADBEEFL);
-        long targetTaskNanos = longVal(map, "targetTaskNanos", 100_000L);
+        if (map.containsKey("targetTaskNanos")) {
+            System.err.println("[yaml] global.targetTaskNanos is deprecated and ignored — "
+                    + "task sizing is per-entry via WorkloadEntry.targetMillis.");
+        }
         int warmupSeconds = intVal(map, "warmupSeconds", 3);
         int measurementSeconds = intVal(map, "measurementSeconds", 10);
         int taskCount = intVal(map, "taskCount", 0);
-        Integer baseIterations = map.containsKey("baseIterations") ? intVal(map, "baseIterations", 0) : null;
         return new GlobalConfig(
                 workerCount,
                 maxInflight,
                 seed,
-                targetTaskNanos,
                 warmupSeconds,
                 measurementSeconds,
-                taskCount,
-                baseIterations
+                taskCount
         );
     }
 
@@ -75,46 +76,231 @@ public final class BenchmarkConfigLoader {
         Map<String, WorkloadConfig> workloads = new LinkedHashMap<>();
         for (Map.Entry<String, Object> entry : map.entrySet()) {
             String name = entry.getKey();
-            if (!(entry.getValue() instanceof Map<?, ?> workloadMap)) {
-                throw new IllegalArgumentException("workloads." + name + " must be a map");
-            }
-            Map<String, Object> wm = (Map<String, Object>) workloadMap;
+            Object value = entry.getValue();
+            String path = "workloads." + name;
 
-            // --- migration guard: reject the pre-refactor schema with an
-            //     explicit, actionable error message ---
-            if (wm.containsKey("kind") || wm.containsKey("type") || wm.containsKey("distribution")) {
+            List<WorkloadEntry> entries;
+
+            // -- New shape A: list of {kind, targetMillis, ratio, name?} --
+            if (value instanceof List<?> list) {
+                entries = new ArrayList<>(list.size());
+                for (int i = 0; i < list.size(); i++) {
+                    entries.add(WorkloadEntry.fromMap(
+                            list.get(i), path + "[" + i + "]"));
+                }
+                entries = normalizeRatios(entries, path);
+            }
+            // -- Map-shaped: either single-entry shorthand, or legacy --
+            else if (value instanceof Map<?, ?> wmRaw) {
+                Map<String, Object> wm = (Map<String, Object>) wmRaw;
+                entries = parseWorkloadMap(name, wm);
+            }
+            else {
                 throw new IllegalArgumentException(
-                        "workloads." + name + ": legacy fields 'kind'/'type'/'distribution' are no "
-                        + "longer supported. Use the new schema: resource=cpu|io|memory|mixed, "
-                        + "mode=single|mix, profile:{...}, and (for mix) components:[...]. "
-                        + "See README / ARCHITECTURE for examples.");
+                        path + " must be a list of entries or a map");
             }
 
-            String resource   = strVal(wm, "resource",   null);
-            String mode       = strVal(wm, "mode",       null);
-            String generation = strVal(wm, "generation", null);
-            WorkloadProfile profile = wm.containsKey("profile")
-                    ? WorkloadProfile.fromMap(wm.get("profile"))
-                    : null;
-
-            List<WorkloadComponentConfig> components = null;
-            Object rawComps = wm.get("components");
-            if (rawComps != null) {
-                if (!(rawComps instanceof List<?> compList)) {
-                    throw new IllegalArgumentException(
-                            "workloads." + name + ".components must be a list");
-                }
-                components = new ArrayList<>();
-                for (int i = 0; i < compList.size(); i++) {
-                    components.add(WorkloadComponentConfig.fromMap(
-                            compList.get(i),
-                            "workloads." + name + ".components[" + i + "]"));
-                }
-            }
-
-            workloads.put(name, new WorkloadConfig(resource, mode, generation, profile, components));
+            workloads.put(name, new WorkloadConfig(entries));
         }
         return workloads;
+    }
+
+    /**
+     * Parses a map-shaped workload value. Supports:
+     * <ol>
+     *   <li><b>Single-entry shorthand</b>: {@code {kind, targetMillis, ratio?}}.</li>
+     *   <li><b>Legacy schema</b>: {@code {resource, mode, profile, components}} or
+     *       {@code {kind: single|mix, type|distribution}} — translated with
+     *       a {@code [legacy-yaml]} stderr warning.</li>
+     * </ol>
+     */
+    @SuppressWarnings("unchecked")
+    private static List<WorkloadEntry> parseWorkloadMap(String name, Map<String, Object> wm) {
+        String path = "workloads." + name;
+
+        // --- Shorthand: {kind: CPU|MEMORY|IO, targetMillis: N} ---
+        Object kindRaw = wm.get("kind");
+        if (kindRaw != null && isResourceKind(String.valueOf(kindRaw))) {
+            return List.of(WorkloadEntry.fromMap(wm, path));
+        }
+
+        // --- Legacy schema below ---
+        // Cases:
+        //   (a) kind: single, type: short|medium|long
+        //   (b) kind: mix,    distribution: {short:..,medium:..,long:..}
+        //   (c) resource: cpu|io|memory|mixed, mode: single|mix, profile/components
+
+        if (kindRaw != null) {
+            String kindStr = String.valueOf(kindRaw).trim().toLowerCase();
+            if ("single".equals(kindStr)) {
+                String type = wm.get("type") == null ? null : String.valueOf(wm.get("type"));
+                System.err.printf("[legacy-yaml] workloads.%s: 'kind: single, type: %s' → translating to new schema%n",
+                        name, type);
+                return List.of(legacyTypeToEntry(type, 1.0));
+            }
+            if ("mix".equals(kindStr)) {
+                Object distRaw = wm.get("distribution");
+                if (!(distRaw instanceof Map<?, ?> distMap)) {
+                    throw new IllegalArgumentException(
+                            path + ": legacy 'kind: mix' requires a 'distribution' map");
+                }
+                System.err.printf("[legacy-yaml] workloads.%s: 'kind: mix' → translating to new schema%n", name);
+                Map<String, Object> dm = (Map<String, Object>) distMap;
+                double total = 0.0;
+                for (Object v : dm.values()) total += Double.parseDouble(String.valueOf(v));
+                if (total <= 0) {
+                    throw new IllegalArgumentException(path + ".distribution must sum to > 0");
+                }
+                List<WorkloadEntry> out = new ArrayList<>(dm.size());
+                for (Map.Entry<String, Object> e : dm.entrySet()) {
+                    double w = Double.parseDouble(String.valueOf(e.getValue()));
+                    if (w <= 0) continue;
+                    out.add(legacyTypeToEntry(e.getKey(), w / total));
+                }
+                return out;
+            }
+        }
+
+        Object resourceRaw = wm.get("resource");
+        if (resourceRaw != null) {
+            System.err.printf("[legacy-yaml] workloads.%s: legacy 'resource/mode/profile/components' schema → translating%n",
+                    name);
+            return legacyResourceSchemaToEntries(name, wm);
+        }
+
+        throw new IllegalArgumentException(
+                path + ": unrecognized workload shape. Use a list of "
+                        + "{kind: CPU|MEMORY|IO, targetMillis: N, ratio: R} entries.");
+    }
+
+    private static boolean isResourceKind(String s) {
+        if (s == null) return false;
+        String v = s.trim().toUpperCase();
+        return "CPU".equals(v) || "MEMORY".equals(v) || "IO".equals(v);
+    }
+
+    /** Map legacy short/medium/long size labels to new entries. */
+    private static WorkloadEntry legacyTypeToEntry(String type, double ratio) {
+        if (type == null) {
+            throw new IllegalArgumentException("legacy task type is required (short|medium|long)");
+        }
+        return switch (type.trim().toLowerCase()) {
+            case "short"  -> new WorkloadEntry("legacy_short",  WorkloadKind.CPU, 1L,  ratio);
+            case "medium" -> new WorkloadEntry("legacy_medium", WorkloadKind.CPU, 5L,  ratio);
+            case "long"   -> new WorkloadEntry("legacy_long",   WorkloadKind.IO,  20L, ratio);
+            default -> throw new IllegalArgumentException(
+                    "unknown legacy task type: '" + type + "' (expected short|medium|long)");
+        };
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<WorkloadEntry> legacyResourceSchemaToEntries(String name, Map<String, Object> wm) {
+        String resource = String.valueOf(wm.get("resource")).trim().toLowerCase();
+        String mode = wm.get("mode") == null ? "single" : String.valueOf(wm.get("mode")).trim().toLowerCase();
+
+        if ("mix".equals(mode) || "mixed".equals(resource)) {
+            Object compsRaw = wm.get("components");
+            if (!(compsRaw instanceof List<?> compList)) {
+                throw new IllegalArgumentException(
+                        "workloads." + name + ": legacy mix requires components[]");
+            }
+            int weightSum = 0;
+            for (Object o : compList) {
+                Map<String, Object> cm = (Map<String, Object>) o;
+                weightSum += cm.get("weight") == null ? 0 : Integer.parseInt(String.valueOf(cm.get("weight")));
+            }
+            if (weightSum <= 0) weightSum = 100;
+            List<WorkloadEntry> out = new ArrayList<>(compList.size());
+            for (Object o : compList) {
+                Map<String, Object> cm = (Map<String, Object>) o;
+                String compName = cm.get("name") == null ? null : String.valueOf(cm.get("name"));
+                String compRes  = cm.get("resource") == null ? null : String.valueOf(cm.get("resource"));
+                int weight      = cm.get("weight") == null ? 0 : Integer.parseInt(String.valueOf(cm.get("weight")));
+                double ratio    = (double) weight / weightSum;
+                Map<String, Object> profile = cm.get("profile") instanceof Map<?, ?> p
+                        ? (Map<String, Object>) p : null;
+                out.add(legacyResourceToEntry(compName, compRes, profile, ratio));
+            }
+            return out;
+        }
+
+        Map<String, Object> profile = wm.get("profile") instanceof Map<?, ?> p
+                ? (Map<String, Object>) p : null;
+        return List.of(legacyResourceToEntry(name, resource, profile, 1.0));
+    }
+
+    private static WorkloadEntry legacyResourceToEntry(String name,
+                                                      String resource,
+                                                      Map<String, Object> profile,
+                                                      double ratio) {
+        if (resource == null) {
+            throw new IllegalArgumentException("legacy entry missing resource");
+        }
+        String r = resource.trim().toLowerCase();
+        return switch (r) {
+            case "cpu" -> {
+                int mult = profile == null || profile.get("iterationsMultiplier") == null
+                        ? 1 : Integer.parseInt(String.valueOf(profile.get("iterationsMultiplier")));
+                long targetMs = legacyCpuMultiplierToMillis(mult);
+                yield new WorkloadEntry(name, WorkloadKind.CPU, targetMs, ratio);
+            }
+            case "io" -> {
+                long waitNanos = 0L;
+                if (profile != null) {
+                    if (profile.get("waitNanos")  != null) waitNanos += Long.parseLong(String.valueOf(profile.get("waitNanos")));
+                    if (profile.get("waitMicros") != null) waitNanos += Long.parseLong(String.valueOf(profile.get("waitMicros"))) * 1_000L;
+                    if (profile.get("waitMillis") != null) waitNanos += Long.parseLong(String.valueOf(profile.get("waitMillis"))) * 1_000_000L;
+                }
+                long targetMs = Math.max(1L, (waitNanos + 999_999L) / 1_000_000L);
+                yield new WorkloadEntry(name, WorkloadKind.IO, targetMs, ratio);
+            }
+            case "memory" -> {
+                int steps = profile == null || profile.get("steps") == null
+                        ? 10_000 : Integer.parseInt(String.valueOf(profile.get("steps")));
+                String pattern = profile == null || profile.get("accessPattern") == null
+                        ? "sequential" : String.valueOf(profile.get("accessPattern"));
+                long perStepNs = "random".equalsIgnoreCase(pattern) ? 60L : 2L;
+                long targetMs = Math.max(1L, ((long) steps * perStepNs + 999_999L) / 1_000_000L);
+                yield new WorkloadEntry(name, WorkloadKind.MEMORY, targetMs, ratio);
+            }
+            case "empty" -> new WorkloadEntry(name, WorkloadKind.CPU, 1L, ratio);
+            default -> throw new IllegalArgumentException(
+                    "unknown legacy resource: '" + resource + "' (expected cpu|io|memory|empty)");
+        };
+    }
+
+    /** SHORT(m=1) → 1ms, MEDIUM(m≈10) → 5ms, LONG(m≈100) → 20ms; lossy. */
+    private static long legacyCpuMultiplierToMillis(int mult) {
+        if (mult <= 1)   return 1L;
+        if (mult <= 5)   return 1L;
+        if (mult <= 25)  return 5L;
+        if (mult <= 75)  return 10L;
+        return 20L;
+    }
+
+    /**
+     * Normalizes ratios so they sum to 1.0. Accepts either fractional
+     * inputs already summing to ~1.0 (within 1e-3) or integer inputs
+     * summing to 100 (auto-divided).
+     */
+    private static List<WorkloadEntry> normalizeRatios(List<WorkloadEntry> in, String path) {
+        double sum = 0.0;
+        for (WorkloadEntry e : in) sum += e.ratio();
+        if (sum <= 0) {
+            throw new IllegalArgumentException(path + ": ratios must sum to > 0");
+        }
+        // Auto-detect integer-percent style.
+        boolean rescale = Math.abs(sum - 1.0) > 1e-3;
+        if (!rescale) return in;
+        List<WorkloadEntry> out = new ArrayList<>(in.size());
+        for (WorkloadEntry e : in) {
+            // Preserve the optional memory() block — dropping it here
+            // would silently revert MEMORY entries to default
+            // accessPattern / bufferMB / writeBack whenever ratios
+            // needed rescaling.
+            out.add(new WorkloadEntry(e.name(), e.kind(), e.targetMillis(), e.ratio() / sum, e.memory()));
+        }
+        return out;
     }
 
     private static ProfilingConfig parseProfiling(Map<String, Object> map) {
@@ -186,13 +372,72 @@ public final class BenchmarkConfigLoader {
                 throw new IllegalArgumentException("Each runs[] item must be a map");
             }
             Map<String, Object> rm = (Map<String, Object>) runMap;
+            String name = strVal(rm, "name", null);
+            HybridConfig perRunHybrid = parseHybrid(
+                    (Map<String, Object>) rm.get("hybrid"),
+                    "runs[" + name + "].hybrid");
             runs.add(new RunConfig(
-                    strVal(rm, "name", null),
+                    name,
                     strVal(rm, "mode", null),
-                    strVal(rm, "workload", null)
+                    strVal(rm, "workload", null),
+                    perRunHybrid
             ));
         }
         return runs;
+    }
+
+    /**
+     * Parses a {@code hybrid:} block. Returns {@code null} when absent.
+     * Performs no defaulting on routing — every WorkloadKind must be
+     * specified explicitly (validated by {@link HybridConfig#validate()}).
+     *
+     * <pre>{@code
+     * hybrid:
+     *   sharedWorkers: 8
+     *   shardedWorkers: 8
+     *   routing:
+     *     CPU:    SHARDED
+     *     MEMORY: SHARED
+     *     IO:     SHARED
+     * }</pre>
+     */
+    @SuppressWarnings("unchecked")
+    private static HybridConfig parseHybrid(Map<String, Object> map, String path) {
+        if (map == null) return null;
+
+        if (!map.containsKey("sharedWorkers")) {
+            throw new IllegalArgumentException(path + ".sharedWorkers is required");
+        }
+        if (!map.containsKey("shardedWorkers")) {
+            throw new IllegalArgumentException(path + ".shardedWorkers is required");
+        }
+        int sharedWorkers  = intVal(map, "sharedWorkers", 0);
+        int shardedWorkers = intVal(map, "shardedWorkers", 0);
+
+        Object routingRaw = map.get("routing");
+        if (!(routingRaw instanceof Map<?, ?> routingMap)) {
+            throw new IllegalArgumentException(
+                    path + ".routing is required and must be a map of WorkloadKind -> SHARED|SHARDED. "
+                            + "Every kind (CPU, MEMORY, IO) must be specified explicitly — there are no defaults.");
+        }
+
+        java.util.EnumMap<WorkloadKind, HybridConfig.RouteTarget> routing =
+                new java.util.EnumMap<>(WorkloadKind.class);
+        for (Map.Entry<?, ?> e : routingMap.entrySet()) {
+            String kindStr = String.valueOf(e.getKey()).trim().toUpperCase();
+            WorkloadKind kind;
+            try {
+                kind = WorkloadKind.valueOf(kindStr);
+            } catch (IllegalArgumentException iae) {
+                throw new IllegalArgumentException(
+                        path + ".routing has unknown WorkloadKind '" + e.getKey()
+                                + "' (allowed: CPU, MEMORY, IO)");
+            }
+            HybridConfig.RouteTarget target = HybridConfig.RouteTarget.parse(String.valueOf(e.getValue()));
+            routing.put(kind, target);
+        }
+
+        return new HybridConfig(sharedWorkers, shardedWorkers, routing);
     }
 
     private static int intVal(Map<String, Object> map, String key, int defaultVal) {

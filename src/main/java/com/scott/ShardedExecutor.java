@@ -3,7 +3,6 @@ package com.scott;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -234,29 +233,14 @@ public final class ShardedExecutor implements BenchmarkExecutor {
         if (BenchmarkFlags.DEBUG && taskList != null) {
             taskList.add(task);
         }
+        totalSubmitCount++;
+        if (task.isMeasurement()) {
+            measurementSubmitCount++;
+        }
         int shard = Math.floorMod(Long.hashCode(task.taskId()), workerCount);
         queues[shard].offer(task);
     }
 
-    /**
-     * Convenience overload: builds a {@link Task} from an id and workload,
-     * stamps the creation time, and submits it directly.
-     *
-     * <p>This path bypasses the {@link Dispatcher}, so
-     * {@link Task#markEnqueued()} is not called — queue-wait measurement
-     * will gracefully fall back to {@code start - created} for tasks
-     * submitted this way.
-     *
-     * @param taskId   unique task identifier
-     * @param workload the workload to execute
-     * @return the newly created {@link Task}
-     */
-    public Task submitNew(long taskId, Workload workload) throws InterruptedException {
-        long createdNanos = System.nanoTime();
-        Task task = new Task(taskId, TaskType.SHORT, 1, createdNanos, false, workload, (Runnable) null);
-        submit(task);
-        return task;
-    }
 
     /* ================================================================
      *  Lifecycle

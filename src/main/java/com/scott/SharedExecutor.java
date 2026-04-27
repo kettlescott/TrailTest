@@ -93,25 +93,6 @@ public final class SharedExecutor implements BenchmarkExecutor {
         executor.execute(task);
     }
 
-    /**
-     * Convenience overload: builds a {@link Task} from an id and workload,
-     * stamps the creation time, and submits it directly.
-     *
-     * <p>This path bypasses the {@link Dispatcher}, so
-     * {@link Task#markEnqueued()} is not called — queue-wait measurement
-     * will gracefully fall back to {@code start - created} for tasks
-     * submitted this way.
-     *
-     * @param taskId   unique task identifier
-     * @param workload the workload to execute
-     * @return the newly created {@link Task}
-     */
-    public Task submitNew(long taskId, Workload workload) {
-        long createdNanos = System.nanoTime();
-        Task task = new Task(taskId, TaskType.SHORT, 1, createdNanos, false, workload, (Runnable) null);
-        submit(task);
-        return task;
-    }
 
     /* ---- observation ---- */
 
