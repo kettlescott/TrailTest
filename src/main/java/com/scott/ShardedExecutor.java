@@ -3,7 +3,6 @@ package com.scott;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -20,9 +19,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * there is no work stealing.
  *
  * <p>This is the direct counterpart of {@link SharedExecutor} for
- * queue-contention benchmarks: same {@link Task}, same timing model
- * ({@link TaskTimingStore}), same {@link LatencyRecorder} — the
- * <em>only</em> structural difference is the queue topology.
+ * queue-contention benchmarks: same {@link Task}, same 4-stage timing
+ * model (created / enqueued / start / finish — see {@link Task}), same
+ * {@link LatencyRecorder} — the <em>only</em> structural difference is
+ * the queue topology.
  *
  * <h3>Optional CPU core pinning</h3>
  * <p>The extended constructors accept an {@code enablePinning} flag and
@@ -233,28 +233,14 @@ public final class ShardedExecutor implements BenchmarkExecutor {
         if (BenchmarkFlags.DEBUG && taskList != null) {
             taskList.add(task);
         }
+        totalSubmitCount++;
+        if (task.isMeasurement()) {
+            measurementSubmitCount++;
+        }
         int shard = Math.floorMod(Long.hashCode(task.taskId()), workerCount);
         queues[shard].offer(task);
     }
 
-    /**
-     * Convenience overload: builds a {@link Task} from an id and workload,
-     * stamps the submit time, and submits it.
-     *
-     * <p>A single-element {@link TaskTimingStore} is created internally.
-     * For benchmark runs prefer the {@link #submit(Task)} method with a
-     * pre-allocated shared store.
-     *
-     * @param taskId   unique task identifier
-     * @param workload the workload to execute
-     * @return the newly created {@link Task}
-     */
-    public Task submitNew(long taskId, Workload workload) throws InterruptedException {
-        long submitTime = System.nanoTime();
-        Task task = new Task(taskId, TaskType.SHORT, 1, submitTime, false, workload, (Runnable) null);
-        submit(task);
-        return task;
-    }
 
     /* ================================================================
      *  Lifecycle

@@ -5,90 +5,40 @@ import java.util.List;
 /**
  * YAML-driven workload definition.
  *
- * <p>Two shapes are supported:
- * <ul>
- *   <li><b>single</b> — {@code resource} is cpu|io|memory,
- *       {@code profile} carries resource-specific parameters.</li>
- *   <li><b>mix</b>    — {@code resource} is {@code mixed}, and
- *       {@code components} is a list of weighted single-resource
- *       sub-workloads whose weights sum to 100.</li>
- * </ul>
+ * <p>A workload is a list of {@link WorkloadEntry} entries. Each entry
+ * pairs a {@link WorkloadKind} (CPU | MEMORY | IO) with a target
+ * wall-clock execution time (millis) and a generation ratio. Per-task
+ * sizing is derived at startup via calibration; SHORT/MEDIUM/LONG
+ * sizing classes no longer exist.
+ *
+ * <p>Single-class workloads are simply a one-entry list with ratio 1.0.
  */
-public record WorkloadConfig(
-        String resource,
-        String mode,
-        String generation,
-        WorkloadProfile profile,
-        List<WorkloadComponentConfig> components
-) {
+public record WorkloadConfig(List<WorkloadEntry> entries) {
 
-    public boolean isSingle() { return "single".equalsIgnoreCase(mode); }
-    public boolean isMix()    { return "mix".equalsIgnoreCase(mode); }
-
-    public WorkloadResourceType resourceType() {
-        return WorkloadResourceType.fromLabel(resource);
+    public WorkloadConfig {
+        if (entries == null || entries.isEmpty()) {
+            throw new IllegalArgumentException("workload must have at least one entry");
+        }
+        entries = List.copyOf(entries);
     }
+
+    /** {@code true} when this workload has exactly one entry. */
+    public boolean isSingle() { return entries.size() == 1; }
 
     public void validate(String name) {
         final String path = "workloads." + name;
-
-        if (mode == null || mode.isBlank()) {
-            throw new IllegalArgumentException(path + ".mode is required (single|mix)");
-        }
-        if (!isSingle() && !isMix()) {
-            throw new IllegalArgumentException(
-                    path + ".mode must be 'single' or 'mix', got '" + mode + "'");
-        }
-
-        WorkloadResourceType rt = resourceType();
-
-        if (isSingle()) {
-            if (rt == WorkloadResourceType.MIXED) {
+        double sum = 0.0;
+        for (int i = 0; i < entries.size(); i++) {
+            WorkloadEntry e = entries.get(i);
+            if (e.ratio() <= 0.0) {
                 throw new IllegalArgumentException(
-                        path + ": resource='mixed' requires mode='mix'");
+                        path + ".entries[" + i + "].ratio must be > 0");
             }
-            if (profile == null) {
-                throw new IllegalArgumentException(path + ".profile is required for single workloads");
-            }
-            profile.validateFor(rt, path);
-            if (components != null && !components.isEmpty()) {
-                throw new IllegalArgumentException(
-                        path + ".components must be empty for single workloads");
-            }
-            return;
+            sum += e.ratio();
         }
-
-        // mix
-        if (rt != WorkloadResourceType.MIXED) {
+        if (Math.abs(sum - 1.0) > 1e-3) {
             throw new IllegalArgumentException(
-                    path + ": mode='mix' requires resource='mixed', got '" + resource + "'");
-        }
-        if (components == null || components.isEmpty()) {
-            throw new IllegalArgumentException(path + ".components is required for mix workloads");
-        }
-        if (profile != null) {
-            throw new IllegalArgumentException(
-                    path + ".profile must not be set for mix workloads (use components[].profile)");
-        }
-        if (generation == null || generation.isBlank()) {
-            throw new IllegalArgumentException(
-                    path + ".generation is required for mix workloads (currently only 'shuffled')");
-        }
-        if (!"shuffled".equalsIgnoreCase(generation)) {
-            throw new IllegalArgumentException(
-                    path + ".generation currently only supports 'shuffled', got '" + generation + "'");
-        }
-
-        int weightSum = 0;
-        for (int i = 0; i < components.size(); i++) {
-            WorkloadComponentConfig c = components.get(i);
-            c.validate(path + ".components[" + i + "]");
-            weightSum += c.weight();
-        }
-        if (weightSum != 100) {
-            throw new IllegalArgumentException(
-                    path + ".components[].weight must sum to 100, got " + weightSum);
+                    path + ".entries[].ratio must sum to 1.0 (got " + String.format("%.4f", sum) + ")");
         }
     }
 }
-

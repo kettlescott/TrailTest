@@ -4,25 +4,35 @@ import java.util.Arrays;
 
 /**
  * Collects latency data from completed {@link Task} objects and computes
- * percentile statistics (p50, p90, p95, p99) for queue wait time,
- * execution time, and end-to-end latency.
+ * percentile + max statistics (p50, p90, p95, p99, max) for:
+ * <ul>
+ *   <li>submit/build overhead  (enqueuedNanos - createdNanos)</li>
+ *   <li>queue wait             (startNanos    - enqueuedNanos)</li>
+ *   <li>execution              (finishNanos   - startNanos)</li>
+ *   <li>end-to-end             (finishNanos   - createdNanos)</li>
+ * </ul>
  *
- * <p>Latency samples are stored in primitive {@code long} buffers
- * ({@link LongBuffer}) to avoid {@link Long} boxing and excessive
- * temporary object allocation.  This reduces young-generation GC
- * pressure and minimises measurement interference during benchmark
- * experiments.
+ * <p>Samples are stored in primitive {@code long} buffers
+ * ({@link LongBuffer}) to avoid {@link Long} boxing and minimise
+ * young-gen GC pressure during measurement. Max values are tracked
+ * incrementally on {@link #record(Task)} — no second pass, no boxing.
  *
- * <p>Percentile computation is performed <em>after</em> all tasks have
- * completed — it is an offline analysis step, not part of the critical
- * path.  Call {@link #record(Task)}  for
- * each completed task, then {@link #summary()} to get a formatted report.
+ * <p>Percentile computation runs <em>after</em> all tasks have completed
+ * (offline analysis). Call {@link #record(Task)} for each completed
+ * task, then {@link #summary()} for a formatted report.
  */
 public final class LatencyRecorder {
 
+    private final LongBuffer submitOverheadNanos;
     private final LongBuffer queueWaitNanos;
     private final LongBuffer executionNanos;
     private final LongBuffer endToEndNanos;
+
+    // Incremental max trackers -- updated per record(), O(1) per sample, no boxing.
+    private long maxSubmitOverheadNanos = Long.MIN_VALUE;
+    private long maxQueueWaitNanos      = Long.MIN_VALUE;
+    private long maxExecutionNanos      = Long.MIN_VALUE;
+    private long maxEndToEndNanos       = Long.MIN_VALUE;
 
     /**
      * Creates a recorder with a default initial capacity (1024).
@@ -41,9 +51,10 @@ public final class LatencyRecorder {
      * @param expectedTasks anticipated number of tasks to record
      */
     public LatencyRecorder(int expectedTasks) {
-        this.queueWaitNanos = new LongBuffer(expectedTasks);
-        this.executionNanos = new LongBuffer(expectedTasks);
-        this.endToEndNanos  = new LongBuffer(expectedTasks);
+        this.submitOverheadNanos = new LongBuffer(expectedTasks);
+        this.queueWaitNanos      = new LongBuffer(expectedTasks);
+        this.executionNanos      = new LongBuffer(expectedTasks);
+        this.endToEndNanos       = new LongBuffer(expectedTasks);
     }
 
     /* ================================================================
@@ -51,15 +62,24 @@ public final class LatencyRecorder {
      * ================================================================ */
 
     /**
-     * Records the latency data from a single completed task.
-     * Only primitive {@code long} values are stored — no boxing occurs.
-     *
-     * @param task a task whose {@link Task#run()} has already finished
+     * Records the latency data from a single completed task. Only
+     * primitive {@code long} values are stored; no boxing occurs.
      */
     public void record(Task task) {
-        queueWaitNanos.add(task.queueWaitTimeNanos());
-        executionNanos.add(task.executionTimeNanos());
-        endToEndNanos.add(task.endToEndLatencyNanos());
+        long so = task.submitOverheadNanos();
+        long qw = task.queueWaitTimeNanos();
+        long ex = task.executionTimeNanos();
+        long e2e = task.endToEndLatencyNanos();
+
+        submitOverheadNanos.add(so);
+        queueWaitNanos.add(qw);
+        executionNanos.add(ex);
+        endToEndNanos.add(e2e);
+
+        if (so  > maxSubmitOverheadNanos) maxSubmitOverheadNanos = so;
+        if (qw  > maxQueueWaitNanos)      maxQueueWaitNanos      = qw;
+        if (ex  > maxExecutionNanos)      maxExecutionNanos      = ex;
+        if (e2e > maxEndToEndNanos)       maxEndToEndNanos       = e2e;
     }
 
     /**
@@ -77,10 +97,14 @@ public final class LatencyRecorder {
     }
 
     /* ================================================================
-     *  Percentile computation
+     *  Percentiles
      * ================================================================ */
 
-    /** Returns the p50 (median) of the given metric. */
+    public double p50SubmitOverhead() { return percentile(submitOverheadNanos, 50); }
+    public double p90SubmitOverhead() { return percentile(submitOverheadNanos, 90); }
+    public double p95SubmitOverhead() { return percentile(submitOverheadNanos, 95); }
+    public double p99SubmitOverhead() { return percentile(submitOverheadNanos, 99); }
+
     public double p50QueueWait()  { return percentile(queueWaitNanos, 50); }
     public double p90QueueWait()  { return percentile(queueWaitNanos, 90); }
     public double p95QueueWait()  { return percentile(queueWaitNanos, 95); }
@@ -97,12 +121,21 @@ public final class LatencyRecorder {
     public double p99EndToEnd()   { return percentile(endToEndNanos, 99); }
 
     /* ================================================================
+     *  Max values (nanoseconds)
+     * ================================================================ */
+
+    public long maxSubmitOverhead() { return submitOverheadNanos.isEmpty() ? 0L : maxSubmitOverheadNanos; }
+    public long maxQueueWait()      { return queueWaitNanos.isEmpty()      ? 0L : maxQueueWaitNanos;      }
+    public long maxExecution()      { return executionNanos.isEmpty()      ? 0L : maxExecutionNanos;      }
+    public long maxEndToEnd()       { return endToEndNanos.isEmpty()       ? 0L : maxEndToEndNanos;       }
+
+    /* ================================================================
      *  Summary
      * ================================================================ */
 
     /**
-     * Returns a formatted multi-line summary of all recorded latencies
-     * with p50 / p90 / p95 / p99 percentiles in milliseconds.
+     * Formatted multi-line summary with p50 / p90 / p95 / p99 / max in
+     * milliseconds, for all four metrics.
      */
     public String summary() {
         if (queueWaitNanos.isEmpty()) {
@@ -112,16 +145,22 @@ public final class LatencyRecorder {
         var sb = new StringBuilder();
         sb.append(String.format("Recorded tasks: %d%n%n", queueWaitNanos.size()));
 
-        sb.append(String.format("%-16s %10s %10s %10s %10s%n",
-                "Metric", "p50", "p90", "p95", "p99"));
-        sb.append("-".repeat(60)).append('\n');
+        sb.append(String.format("%-16s %10s %10s %10s %10s %10s%n",
+                "Metric", "p50", "p90", "p95", "p99", "max"));
+        sb.append("-".repeat(72)).append('\n');
 
+        sb.append(formatRow("Submit overhead",
+                p50SubmitOverhead(), p90SubmitOverhead(), p95SubmitOverhead(), p99SubmitOverhead(),
+                maxSubmitOverhead()));
         sb.append(formatRow("Queue wait",
-                p50QueueWait(), p90QueueWait(), p95QueueWait(), p99QueueWait()));
+                p50QueueWait(), p90QueueWait(), p95QueueWait(), p99QueueWait(),
+                maxQueueWait()));
         sb.append(formatRow("Execution",
-                p50Execution(), p90Execution(), p95Execution(), p99Execution()));
+                p50Execution(), p90Execution(), p95Execution(), p99Execution(),
+                maxExecution()));
         sb.append(formatRow("End-to-end",
-                p50EndToEnd(), p90EndToEnd(), p95EndToEnd(), p99EndToEnd()));
+                p50EndToEnd(), p90EndToEnd(), p95EndToEnd(), p99EndToEnd(),
+                maxEndToEnd()));
 
         return sb.toString();
     }
@@ -130,15 +169,6 @@ public final class LatencyRecorder {
      *  Internals
      * ================================================================ */
 
-    /**
-     * Computes the p-th percentile from a {@link LongBuffer} of nanosecond
-     * samples using the nearest-rank method.  Operates entirely on a
-     * primitive {@code long[]} copy — no boxing involved.
-     *
-     * @param data       raw nanosecond samples
-     * @param percentile the desired percentile (0–100)
-     * @return the percentile value in nanoseconds
-     */
     private static double percentile(LongBuffer data, int percentile) {
         if (data.isEmpty()) return 0.0;
 
@@ -151,13 +181,16 @@ public final class LatencyRecorder {
         return sorted[index];
     }
 
-    private static String formatRow(String label, double p50, double p90, double p95, double p99) {
-        return String.format("%-16s %9.3f ms %9.3f ms %9.3f ms %9.3f ms%n",
+    private static String formatRow(String label,
+                                    double p50, double p90, double p95, double p99,
+                                    long maxNanos) {
+        return String.format("%-16s %9.3f ms %9.3f ms %9.3f ms %9.3f ms %9.3f ms%n",
                 label,
                 p50 / 1_000_000.0,
                 p90 / 1_000_000.0,
                 p95 / 1_000_000.0,
-                p99 / 1_000_000.0);
+                p99 / 1_000_000.0,
+                maxNanos / 1_000_000.0);
     }
 }
 

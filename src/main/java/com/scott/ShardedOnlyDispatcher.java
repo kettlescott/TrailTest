@@ -16,6 +16,7 @@ public final class ShardedOnlyDispatcher implements Dispatcher {
 
     @Override
     public void submit(Task task) throws InterruptedException {
+        task.markEnqueued();
         executor.submit(task);
     }
 
@@ -32,6 +33,11 @@ public final class ShardedOnlyDispatcher implements Dispatcher {
     @Override
     public String label() {
         return "ShardedOnly";
+    }
+
+    @Override
+    public int totalQueueSize() {
+        return executor.getTotalQueueSize();
     }
 
     /** Exposes the backing executor for diagnostics (queue distribution, counts). */

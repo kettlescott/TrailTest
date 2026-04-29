@@ -17,12 +17,7 @@ package com.scott;
  */
 public enum BenchmarkMode {
 
-    /**
-     * Calibrate-only mode.  Runs calibration, computes task counts, and
-     * prints a machine-readable {@link BenchmarkConfig} block.  No executor
-     * is started — the output is meant to be fed back as CLI arguments to
-     * subsequent {@code SHARED} or {@code SHARDED} runs.
-     */
+    /** Calibrate-only mode (legacy CLI tooling). */
     PREPARE,
 
     /** Run only {@link SharedExecutor}. */
@@ -31,10 +26,10 @@ public enum BenchmarkMode {
     /** Run only {@link ShardedExecutor}. */
     SHARDED,
 
-    /** Run type-aware hybrid routing (SHORT→sharded, MEDIUM/LONG→shared). */
-    TYPE_AWARE,
+    /** Run {@link HybridDispatcher} routing by {@link WorkloadKind}. */
+    HYBRID,
 
-    /** Run all three policies sequentially and print a side-by-side comparison. */
+    /** Run all policies sequentially (legacy comparison). */
     COMPARE;
 
     /**
@@ -54,7 +49,7 @@ public enum BenchmarkMode {
                 try {
                     return BenchmarkMode.valueOf(value);
                 } catch (IllegalArgumentException e) {
-                    System.err.printf("Unknown benchmark mode: '%s'.  Valid modes: prepare, shared, sharded, type_aware, compare%n", value);
+                    System.err.printf("Unknown benchmark mode: '%s'.  Valid modes: prepare, shared, sharded, hybrid, compare%n", value);
                     System.exit(1);
                 }
             }
@@ -68,12 +63,13 @@ public enum BenchmarkMode {
             throw new IllegalArgumentException("Run mode is required");
         }
         String normalized = value.trim().toUpperCase().replace('-', '_');
+        // Legacy alias.
+        if ("TYPE_AWARE".equals(normalized)) normalized = "HYBRID";
         try {
             return BenchmarkMode.valueOf(normalized);
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException(
-                    "Unknown run mode: '" + value + "' (expected shared|sharded|type_aware|compare|prepare)");
+                    "Unknown run mode: '" + value + "' (expected shared|sharded|hybrid|compare|prepare)");
         }
     }
 }
-
