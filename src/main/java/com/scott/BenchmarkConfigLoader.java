@@ -376,14 +376,35 @@ public final class BenchmarkConfigLoader {
             HybridConfig perRunHybrid = parseHybrid(
                     (Map<String, Object>) rm.get("hybrid"),
                     "runs[" + name + "].hybrid");
+            PinningConfig pinning = parsePinning(
+                    (Map<String, Object>) rm.get("pinning"),
+                    "runs[" + name + "].pinning");
             runs.add(new RunConfig(
                     name,
                     strVal(rm, "mode", null),
                     strVal(rm, "workload", null),
-                    perRunHybrid
+                    perRunHybrid,
+                    pinning
             ));
         }
         return runs;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static PinningConfig parsePinning(Map<String, Object> map, String path) {
+        if (map == null) return null;
+        boolean enabled = boolVal(map, "enabled", false);
+        int[] coreMap = null;
+        Object cm = map.get("coreMap");
+        if (cm instanceof List<?> list) {
+            coreMap = new int[list.size()];
+            for (int i = 0; i < list.size(); i++) {
+                coreMap[i] = Integer.parseInt(String.valueOf(list.get(i)));
+            }
+        } else if (cm != null) {
+            throw new IllegalArgumentException(path + ".coreMap must be a list of integers");
+        }
+        return new PinningConfig(enabled, coreMap);
     }
 
     /**

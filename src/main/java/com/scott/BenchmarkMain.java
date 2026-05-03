@@ -67,7 +67,9 @@ public class BenchmarkMain {
         // Resolve effective hybrid config (per-run override > root). Required
         // for HYBRID mode; ignored for SHARED/SHARDED.
         HybridConfig effectiveHybrid = run.hybrid() != null ? run.hybrid() : root.hybrid();
-        Dispatcher dispatcher = createDispatcher(mode, global.workerCount(), effectiveHybrid);
+        PinningConfig pinning = run.pinning() == null ? PinningConfig.disabled() : run.pinning();
+        pinning.validate(run.name(), mode, global.workerCount());
+        Dispatcher dispatcher = createDispatcher(mode, global.workerCount(), effectiveHybrid, pinning);
 
         Path runDir = Paths.get("results", run.name());
         Files.createDirectories(runDir);
@@ -106,6 +108,7 @@ public class BenchmarkMain {
                 System.out.printf("    [%d] %s%n", cidx++, c.summary());
             }
             System.out.printf("  Workers          : %d%n", global.workerCount());
+            System.out.printf("  %s%n", pinning.describe());
             System.out.printf("  Max in-flight    : %d%n", global.maxInflight());
             System.out.printf("  Warmup           : %d s%n", global.warmupSeconds());
             System.out.printf("  Measurement      : %d s%n", global.measurementSeconds());
@@ -222,6 +225,10 @@ public class BenchmarkMain {
             }
             appendWorkloadSummary(summary, workload);
             appendCalibrationSummary(summary, generator);
+            summary.append("pinningEnabled=").append(pinning.enabled()).append('\n');
+            summary.append("pinningCoreMap=")
+                    .append(pinning.coreMap() == null ? "null" : java.util.Arrays.toString(pinning.coreMap()))
+                    .append('\n');
             summary.append("submitted=").append(measurement.submitted()).append('\n');
             summary.append("submitDurationSeconds=").append(String.format("%.3f", submitSecs)).append('\n');
             summary.append("drainDurationSeconds=").append(String.format("%.3f", drainSecs)).append('\n');
@@ -492,10 +499,11 @@ public class BenchmarkMain {
                 backpressure, backpressureWaitNanos, taskId);
     }
 
-    private static Dispatcher createDispatcher(BenchmarkMode mode, int workerCount, HybridConfig hybrid) {
+    private static Dispatcher createDispatcher(BenchmarkMode mode, int workerCount,
+                                                HybridConfig hybrid, PinningConfig pinning) {
         return switch (mode) {
             case SHARED  -> new SharedOnlyDispatcher(workerCount);
-            case SHARDED -> new ShardedOnlyDispatcher(workerCount);
+            case SHARDED -> new ShardedOnlyDispatcher(workerCount, pinning);
             case HYBRID  -> {
                 if (hybrid == null) {
                     throw new IllegalArgumentException(

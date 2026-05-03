@@ -4,11 +4,17 @@ public record RunConfig(
         String name,
         String mode,
         String workload,
-        HybridConfig hybrid
+        HybridConfig hybrid,
+        PinningConfig pinning
 ) {
-    /** Convenience constructor: no per-run hybrid override. */
+    /** Convenience constructor: no per-run hybrid override and no pinning. */
     public RunConfig(String name, String mode, String workload) {
-        this(name, mode, workload, null);
+        this(name, mode, workload, null, null);
+    }
+
+    /** Convenience constructor: per-run hybrid override, no pinning. */
+    public RunConfig(String name, String mode, String workload, HybridConfig hybrid) {
+        this(name, mode, workload, hybrid, null);
     }
 
     public void validate() {

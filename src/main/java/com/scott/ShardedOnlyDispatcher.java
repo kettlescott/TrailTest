@@ -11,7 +11,12 @@ public final class ShardedOnlyDispatcher implements Dispatcher {
     private final ShardedExecutor executor;
 
     public ShardedOnlyDispatcher(int workerCount) {
-        this.executor = new ShardedExecutor(workerCount);
+        this(workerCount, PinningConfig.disabled());
+    }
+
+    public ShardedOnlyDispatcher(int workerCount, PinningConfig pinning) {
+        PinningConfig p = pinning == null ? PinningConfig.disabled() : pinning;
+        this.executor = new ShardedExecutor(workerCount, p.enabled(), p.coreMap());
     }
 
     @Override
