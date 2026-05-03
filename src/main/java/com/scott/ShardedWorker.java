@@ -2,6 +2,8 @@ package com.scott;
 
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Worker thread for {@link ShardedExecutor}.
@@ -79,6 +81,16 @@ final class ShardedWorker implements Runnable {
      */
     private String pinningError;
 
+    /* ---- startup handshake (set once before Thread.start()) ---- */
+
+    /** Counted down exactly once after the pinning attempt completes
+     *  (success or failure).  May be {@code null} when no handshake is in use. */
+    private CountDownLatch startupLatch;
+
+    /** Receives the first startup failure cause across all workers.
+     *  May be {@code null} when no handshake is in use. */
+    private AtomicReference<Throwable> startupFailure;
+
     /**
      * Creates a worker <em>without</em> CPU pinning (original behaviour).
      */
@@ -134,14 +146,28 @@ final class ShardedWorker implements Runnable {
                             Thread.currentThread().getName(), workerId, coreId,
                             CpuAffinity.getCurrentAffinityMask());
                 }
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 pinned = false;
                 pinningError = e.getMessage();
-                if (BenchmarkFlags.DEBUG) {
-                    System.err.printf("[%s] worker-%d FAILED to pin to core %d: %s%n",
-                            Thread.currentThread().getName(), workerId, coreId, e.getMessage());
+                IllegalStateException wrapped = new IllegalStateException(
+                        "Worker " + workerId + " failed to pin to core " + coreId, e);
+                if (startupFailure != null) {
+                    // Record the FIRST failure across all workers; others are dropped.
+                    startupFailure.compareAndSet(null, wrapped);
                 }
+                if (startupLatch != null) {
+                    startupLatch.countDown();
+                }
+                // Exit cleanly — the constructor on the main thread will
+                // observe startupFailure and propagate the exception.
+                return;
             }
+        }
+        // Always count down — even when pinning is disabled — so the
+        // executor constructor's await() unblocks once every worker has
+        // reached steady state.
+        if (startupLatch != null) {
+            startupLatch.countDown();
         }
 
         // ---- main task loop (identical to the non-pinned version) ----
@@ -205,5 +231,18 @@ final class ShardedWorker implements Runnable {
     /** Returns the pinning error message, or {@code null} if not attempted or succeeded. */
     String pinningError() {
         return pinningError;
+    }
+
+    /**
+     * Wires the startup handshake.  Must be called <em>before</em>
+     * {@code Thread.start()} on the worker.  After the worker's pinning
+     * attempt completes (success or failure), it counts down
+     * {@code latch} exactly once.  On failure, it also publishes the
+     * cause into {@code failureRef} and exits without entering the task
+     * loop.  Either argument may be {@code null} to disable the handshake.
+     */
+    void setStartupHandshake(CountDownLatch latch, AtomicReference<Throwable> failureRef) {
+        this.startupLatch   = latch;
+        this.startupFailure = failureRef;
     }
 }

@@ -5,7 +5,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Sharded Executor — per-worker queue implementation with optional CPU
@@ -168,6 +170,10 @@ public final class ShardedExecutor implements BenchmarkExecutor {
     @SuppressWarnings("unchecked")
     public ShardedExecutor(int workerCount, boolean enablePinning, int[] coreMap) {
         if (enablePinning) {
+            if (!CpuAffinity.isSupported()) {
+                throw new IllegalStateException(
+                        "CPU pinning was requested but CpuAffinity is not supported on this platform");
+            }
             if (coreMap == null) {
                 throw new IllegalArgumentException(
                         "coreMap must not be null when pinning is enabled");
@@ -204,9 +210,48 @@ public final class ShardedExecutor implements BenchmarkExecutor {
             workerThreads[i].setDaemon(false);
         }
 
+        // ---- Startup handshake ----
+        // Each worker counts down the latch exactly once after its
+        // pinning attempt completes (success or failure).  If any worker
+        // fails to pin, it publishes the cause into startupFailure and
+        // exits without entering the task loop.  We then tear down and
+        // rethrow from the constructor so callers never see a half-dead
+        // executor that would silently hang on submit().
+        CountDownLatch startupLatch = new CountDownLatch(workerCount);
+        AtomicReference<Throwable> startupFailure = new AtomicReference<>();
+        for (ShardedWorker w : workers) {
+            w.setStartupHandshake(startupLatch, startupFailure);
+        }
+
         // Start all workers eagerly.
         for (Thread t : workerThreads) {
             t.start();
+        }
+
+        // Wait for every worker to finish its startup phase.
+        try {
+            startupLatch.await();
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            shutdown();
+            throw new IllegalStateException(
+                    "Interrupted while waiting for ShardedExecutor workers to start", ie);
+        }
+
+        Throwable failure = startupFailure.get();
+        if (failure != null) {
+            // Best-effort teardown of any workers that did start cleanly.
+            shutdown();
+            try {
+                awaitTermination(2, TimeUnit.SECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+            if (failure instanceof IllegalStateException ise) {
+                throw ise;
+            }
+            throw new IllegalStateException(
+                    "ShardedExecutor startup failed: " + failure.getMessage(), failure);
         }
     }
 
