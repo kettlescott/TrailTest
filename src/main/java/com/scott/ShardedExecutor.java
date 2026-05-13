@@ -5,9 +5,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Sharded Executor — per-worker queue implementation with optional CPU
@@ -147,25 +145,29 @@ public final class ShardedExecutor implements BenchmarkExecutor {
      *
      * <p>When {@code enablePinning} is {@code true}, each worker thread
      * will call {@link CpuAffinity#pinCurrentThreadToCore(int)} with the
-     * core ID from {@code coreMap[workerIndex]} at the start of its
-     * {@code run()} method.  The pinning is <em>per-thread</em>, not
-     * per-process — only the worker thread is affected.
+     * core ID from {@code coreMap[workerIndex % coreMap.length]} at the
+     * start of its {@code run()} method.  The pinning is <em>per-thread</em>,
+     * not per-process — only the worker thread is affected.  If pinning
+     * fails for an individual worker, a warning is logged and that
+     * worker continues unpinned; the benchmark is never aborted.
      *
      * <p>When {@code enablePinning} is {@code false}, {@code coreMap} is
      * ignored and workers run with the default OS scheduling (identical to
      * the single-argument constructor).
      *
-     * <p>All other semantics (queue topology, task routing, shutdown
-     * protocol) are identical regardless of pinning mode.
+     * <p>{@code coreMap} may be shorter than {@code workerCount}; workers
+     * are assigned cores in round-robin order over the map.
      *
      * @param workerCount   number of worker threads (one queue per worker)
      * @param enablePinning whether to pin worker threads to CPU cores
-     * @param coreMap       array of logical CPU core IDs, one per worker;
-     *                      must have length {@code >= workerCount} when
+     * @param coreMap       array of logical CPU core IDs; assigned to
+     *                      workers round-robin
+     *                      ({@code coreMap[i % coreMap.length]}).  Must
+     *                      be non-null and non-empty when
      *                      {@code enablePinning} is {@code true};
      *                      may be {@code null} when pinning is disabled
      * @throws IllegalArgumentException if pinning is enabled but
-     *         {@code coreMap} is {@code null} or too short
+     *         {@code coreMap} is {@code null} or empty
      */
     @SuppressWarnings("unchecked")
     public ShardedExecutor(int workerCount, boolean enablePinning, int[] coreMap) {
@@ -174,18 +176,18 @@ public final class ShardedExecutor implements BenchmarkExecutor {
                 throw new IllegalStateException(
                         "CPU pinning was requested but CpuAffinity is not supported on this platform");
             }
-            if (coreMap == null) {
+            if (coreMap == null || coreMap.length == 0) {
                 throw new IllegalArgumentException(
-                        "coreMap must not be null when pinning is enabled");
+                        "coreMap must not be null or empty when pinning is enabled");
             }
-            if (coreMap.length < workerCount) {
-                throw new IllegalArgumentException(
-                        "coreMap.length (" + coreMap.length +
-                                ") < workerCount (" + workerCount + ")");
-            }
-            // Defensive copy so the caller cannot mutate the map later.
+            // Round-robin assignment: build a per-worker map of length
+            // workerCount by cycling through the source coreMap.  This
+            // also acts as a defensive copy so the caller cannot mutate
+            // the map later.
             this.coreMap = new int[workerCount];
-            System.arraycopy(coreMap, 0, this.coreMap, 0, workerCount);
+            for (int i = 0; i < workerCount; i++) {
+                this.coreMap[i] = coreMap[i % coreMap.length];
+            }
         } else {
             this.coreMap = null;
         }
@@ -210,48 +212,11 @@ public final class ShardedExecutor implements BenchmarkExecutor {
             workerThreads[i].setDaemon(false);
         }
 
-        // ---- Startup handshake ----
-        // Each worker counts down the latch exactly once after its
-        // pinning attempt completes (success or failure).  If any worker
-        // fails to pin, it publishes the cause into startupFailure and
-        // exits without entering the task loop.  We then tear down and
-        // rethrow from the constructor so callers never see a half-dead
-        // executor that would silently hang on submit().
-        CountDownLatch startupLatch = new CountDownLatch(workerCount);
-        AtomicReference<Throwable> startupFailure = new AtomicReference<>();
-        for (ShardedWorker w : workers) {
-            w.setStartupHandshake(startupLatch, startupFailure);
-        }
-
-        // Start all workers eagerly.
+        // Start all workers eagerly.  Pinning is attempted per-worker
+        // inside run(); failures are logged and the worker continues
+        // unpinned, so no startup handshake is required.
         for (Thread t : workerThreads) {
             t.start();
-        }
-
-        // Wait for every worker to finish its startup phase.
-        try {
-            startupLatch.await();
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            shutdown();
-            throw new IllegalStateException(
-                    "Interrupted while waiting for ShardedExecutor workers to start", ie);
-        }
-
-        Throwable failure = startupFailure.get();
-        if (failure != null) {
-            // Best-effort teardown of any workers that did start cleanly.
-            shutdown();
-            try {
-                awaitTermination(2, TimeUnit.SECONDS);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-            }
-            if (failure instanceof IllegalStateException ise) {
-                throw ise;
-            }
-            throw new IllegalStateException(
-                    "ShardedExecutor startup failed: " + failure.getMessage(), failure);
         }
     }
 

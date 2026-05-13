@@ -13,7 +13,12 @@ public final class SharedOnlyDispatcher implements Dispatcher {
     private final SharedExecutor executor;
 
     public SharedOnlyDispatcher(int workerCount) {
-        this.executor = new SharedExecutor(workerCount);
+        this(workerCount, PinningConfig.disabled());
+    }
+
+    public SharedOnlyDispatcher(int workerCount, PinningConfig pinning) {
+        this.executor = new SharedExecutor(workerCount,
+                pinning == null ? PinningConfig.disabled() : pinning);
     }
 
     @Override

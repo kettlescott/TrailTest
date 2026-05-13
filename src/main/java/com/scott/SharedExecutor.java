@@ -56,6 +56,23 @@ public final class SharedExecutor implements BenchmarkExecutor {
      * @param poolSize number of fixed worker threads
      */
     public SharedExecutor(int poolSize) {
+        this(poolSize, PinningConfig.disabled());
+    }
+
+    /**
+     * Creates the shared executor with optional CPU pinning.
+     *
+     * <p>When {@code pinning.enabled()} is {@code true}, each worker thread
+     * pins itself to a CPU at startup using round-robin assignment over
+     * {@code pinning.coreMap()}:
+     * {@code cpuId = coreMap[threadIndex % coreMap.length]}.
+     * If affinity setting fails, a warning is logged and the worker
+     * continues unpinned.
+     *
+     * @param poolSize number of fixed worker threads
+     * @param pinning  optional pinning config; if null or disabled, behaves identically to the legacy constructor
+     */
+    public SharedExecutor(int poolSize, PinningConfig pinning) {
         this.workQueue = new LinkedBlockingQueue<>();
         this.taskList  = BenchmarkFlags.DEBUG ? new ArrayList<>() : null;
         this.executor = new ThreadPoolExecutor(
@@ -63,7 +80,7 @@ public final class SharedExecutor implements BenchmarkExecutor {
                 poolSize,                       // maximumPoolSize (fixed)
                 0L, TimeUnit.MILLISECONDS,      // keep-alive (irrelevant for fixed pool)
                 workQueue,                      // single shared queue
-                new DeterministicThreadFactory() // predictable thread names
+                new DeterministicThreadFactory(pinning) // predictable thread names + optional pinning
         );
     }
 
@@ -174,10 +191,35 @@ public final class SharedExecutor implements BenchmarkExecutor {
 
     private static final class DeterministicThreadFactory implements ThreadFactory {
         private final AtomicInteger counter = new AtomicInteger(0);
+        private final PinningConfig pinning;
+
+        DeterministicThreadFactory() {
+            this(PinningConfig.disabled());
+        }
+
+        DeterministicThreadFactory(PinningConfig pinning) {
+            this.pinning = (pinning == null) ? PinningConfig.disabled() : pinning;
+        }
 
         @Override
         public Thread newThread(Runnable r) {
-            Thread t = new Thread(r, "SharedWorker-" + counter.getAndIncrement());
+            int idx = counter.getAndIncrement();
+            Runnable body = r;
+            if (pinning.enabled() && pinning.coreMap() != null && pinning.coreMap().length > 0) {
+                int[] map = pinning.coreMap();
+                final int coreId = map[idx % map.length];
+                final int workerIdx = idx;
+                body = () -> {
+                    try {
+                        CpuAffinity.pinCurrentThreadToCore(coreId);
+                    } catch (Throwable e) {
+                        System.err.printf("[SharedWorker-%d] WARN: failed to pin to core %d: %s%n",
+                                workerIdx, coreId, e.getMessage());
+                    }
+                    r.run();
+                };
+            }
+            Thread t = new Thread(body, "SharedWorker-" + idx);
             t.setDaemon(false);
             return t;
         }

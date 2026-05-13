@@ -63,4 +63,24 @@ runs:
   - name: shared_cpu_4ms
     mode: shared
     workload: cpu_4ms
+    enabled: false        # set to true to include this run; false skips it
+    pinning:
+      enabled: false
+
+  - name: shared_cpu_4ms_pinned
+    mode: shared
+    workload: cpu_4ms
+    enabled: true
+    # Optional CPU pinning for SHARED workers (round-robin over coreMap).
+    # Only honored when mode == shared; ignored otherwise.
+    # 32 logical CPUs (matches global.workerCount=32) — one SMT sibling
+    # per physical core across both sockets on the 2× Xeon Gold 6242 host.
+    pinning:
+      enabled: true
+      coreMap: [
+         0,  1,  2,  3,  4,  5,  6,  7,
+         8,  9, 10, 11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20, 21, 22, 23,
+        24, 25, 26, 27, 28, 29, 30, 31
+      ]
 

@@ -544,7 +544,7 @@ public class BenchmarkMain {
     private static Dispatcher createDispatcher(BenchmarkMode mode, int workerCount,
                                                 HybridConfig hybrid, PinningConfig pinning) {
         return switch (mode) {
-            case SHARED  -> new SharedOnlyDispatcher(workerCount);
+            case SHARED  -> new SharedOnlyDispatcher(workerCount, pinning);
             case SHARDED -> new ShardedOnlyDispatcher(workerCount, pinning);
             case HYBRID  -> {
                 if (hybrid == null) {
