@@ -66,6 +66,10 @@ public final class PerKindLatencyRecorder {
                     r.p95QueueWait() / 1_000_000.0,
                     r.p99QueueWait() / 1_000_000.0));
             sb.append(String.format(
+                    "perKind.%s.executionMs.avg=%.3f%n",
+                    k.name(),
+                    r.avgExecution() / 1_000_000.0));
+            sb.append(String.format(
                     "perKind.%s.executionMs.p50=%.3f, p95=%.3f, p99=%.3f%n",
                     k.name(),
                     r.p50Execution() / 1_000_000.0,

@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.ParseException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -37,29 +38,80 @@ public final class JfrProfiler implements Profiler {
 
     public enum Control { API, CLI }
 
+    /**
+     * JFR event names whose threshold we lower to 0 ms when
+     * {@code captureLocks} is enabled. This is the minimal set needed to
+     * see queue / semaphore contention in this benchmark:
+     * <ul>
+     *   <li>{@code jdk.JavaMonitorEnter} — {@code synchronized} contention</li>
+     *   <li>{@code jdk.JavaMonitorWait}  — {@code Object.wait()}</li>
+     *   <li>{@code jdk.JavaMonitorInflate} — monitor inflation</li>
+     *   <li>{@code jdk.ThreadPark} — {@code LockSupport.park()}, which is
+     *       what {@code ReentrantLock}, {@code Semaphore},
+     *       {@code LinkedBlockingQueue}, and all {@code AQS}-based
+     *       primitives ultimately call</li>
+     * </ul>
+     */
+    private static final String[] LOCK_EVENTS = {
+            "jdk.JavaMonitorEnter",
+            "jdk.JavaMonitorWait",
+            "jdk.JavaMonitorInflate",
+            "jdk.ThreadPark"
+    };
+
     private final Control control;
     private final String  runName;
     private final String  settings;
     private final Path    outputFile;
     private final String  startCommandTemplate;   // CLI only; nullable
     private final String  stopCommandTemplate;    // CLI only; nullable
+    private final boolean captureLocks;
+    private final String  lockEventThreshold;   // JFR duration string, e.g. "0ms", "500us"
 
     private Recording recording;       // API mode only
     private boolean started;
     private boolean stopped;
 
+    /** Back-compat constructor: captureLocks defaults to {@code false}. */
     public JfrProfiler(Control control,
                        String runName,
                        String settings,
                        Path outputFile,
                        String startCommandTemplate,
                        String stopCommandTemplate) {
+        this(control, runName, settings, outputFile,
+                startCommandTemplate, stopCommandTemplate, false, "0ms");
+    }
+
+    /** Back-compat constructor: lockEventThreshold defaults to "0ms". */
+    public JfrProfiler(Control control,
+                       String runName,
+                       String settings,
+                       Path outputFile,
+                       String startCommandTemplate,
+                       String stopCommandTemplate,
+                       boolean captureLocks) {
+        this(control, runName, settings, outputFile,
+                startCommandTemplate, stopCommandTemplate, captureLocks, "0ms");
+    }
+
+    public JfrProfiler(Control control,
+                       String runName,
+                       String settings,
+                       Path outputFile,
+                       String startCommandTemplate,
+                       String stopCommandTemplate,
+                       boolean captureLocks,
+                       String lockEventThreshold) {
         this.control              = control;
         this.runName              = runName;
         this.settings             = settings;
         this.outputFile           = outputFile;
         this.startCommandTemplate = startCommandTemplate;
         this.stopCommandTemplate  = stopCommandTemplate;
+        this.captureLocks         = captureLocks;
+        this.lockEventThreshold   = (lockEventThreshold == null || lockEventThreshold.isBlank())
+                ? "0ms" : lockEventThreshold;
     }
 
     @Override public String name() { return "jfr(" + control.name().toLowerCase() + ")"; }
@@ -103,10 +155,53 @@ public final class JfrProfiler implements Profiler {
             r.setName(runName);
             r.setDestination(outputFile);
             r.setToDisk(true);
+            if (captureLocks) {
+                applyLockEventOverrides(r);
+            }
             r.start();
             this.recording = r;
         } catch (ParseException e) {
             throw new IOException("Failed to load JFR configuration '" + settings + "'", e);
+        }
+    }
+
+    /**
+     * Lowers the threshold for the {@link #LOCK_EVENTS} set and forces
+     * stack-trace capture so contention sites are diagnosable. Called
+     * only when {@code captureLocks=true} (API back-end).
+     */
+    private void applyLockEventOverrides(Recording r) {
+        Duration threshold = parseJfrDuration(lockEventThreshold);
+        for (String event : LOCK_EVENTS) {
+            r.enable(event)
+                    .withThreshold(threshold)
+                    .withStackTrace();
+        }
+    }
+
+    /**
+     * Parses a JFR-style duration string such as {@code "0ms"},
+     * {@code "500us"}, {@code "1ms"}, {@code "2s"}, {@code "100ns"}.
+     * Used for the {@code captureLocks} threshold. Falls back to
+     * {@link Duration#ZERO} on a blank/unrecognised input rather than
+     * failing the run, since this is a diagnostic-only setting.
+     */
+    private static Duration parseJfrDuration(String s) {
+        if (s == null || s.isBlank()) return Duration.ZERO;
+        String t = s.trim().toLowerCase();
+        try {
+            if (t.endsWith("ns")) return Duration.ofNanos (Long.parseLong(t.substring(0, t.length() - 2).trim()));
+            if (t.endsWith("us") || t.endsWith("µs")) {
+                String num = t.endsWith("µs") ? t.substring(0, t.length() - 2) : t.substring(0, t.length() - 2);
+                return Duration.ofNanos(Long.parseLong(num.trim()) * 1_000L);
+            }
+            if (t.endsWith("ms")) return Duration.ofMillis(Long.parseLong(t.substring(0, t.length() - 2).trim()));
+            if (t.endsWith("s"))  return Duration.ofSeconds(Long.parseLong(t.substring(0, t.length() - 1).trim()));
+            // Bare number → assume milliseconds (matches JFR convention).
+            return Duration.ofMillis(Long.parseLong(t));
+        } catch (NumberFormatException e) {
+            System.err.println("[jfr] Unrecognised lockEventThreshold '" + s + "', falling back to 0ms");
+            return Duration.ZERO;
         }
     }
 
@@ -154,6 +249,18 @@ public final class JfrProfiler implements Profiler {
             args.add("name=" + runName);
             args.add("settings=" + settings);
             args.add("filename=" + outputFile.toString());
+            if (captureLocks) {
+                // Per-event overrides: jcmd accepts
+                // "<event-name>#<setting>=<value>" tokens that take
+                // precedence over the loaded preset. The threshold
+                // string is passed through verbatim ("0ms", "500us",
+                // "1ms", ...) — jcmd parses JFR duration syntax.
+                for (String event : LOCK_EVENTS) {
+                    args.add(event + "#enabled=true");
+                    args.add(event + "#threshold=" + lockEventThreshold);
+                    args.add(event + "#stackTrace=true");
+                }
+            }
         } else {
             args.add("JFR.stop");
             args.add("name=" + runName);

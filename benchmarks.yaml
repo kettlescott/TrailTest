@@ -123,6 +123,22 @@ runs:
   - name: sharded_cpu_1ms
     mode: sharded
     workload: cpu_1ms
+    pinning:
+      enabled: false
+
+  # Pinned counterpart of sharded_cpu_1ms.
+  # Host: 2× Xeon Gold 6242 (16 cores / 32 threads per socket, 2 NUMA nodes).
+  #   NUMA node0 CPUs: 0,2,4,...,62
+  #   NUMA node1 CPUs: 1,3,5,...,63
+  # We pin all 16 workers to NUMA node0 logical CPUs to keep memory
+  # traffic on one socket and eliminate cross-socket migration as a
+  # confounding variable in the pinned-vs-unpinned A/B.
+  - name: sharded_cpu_1ms_pinned
+    mode: sharded
+    workload: cpu_1ms
+    pinning:
+      enabled: true
+      coreMap: [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]
 
   - name: shared_io_2ms
     mode: shared
@@ -131,6 +147,15 @@ runs:
   - name: sharded_io_2ms
     mode: sharded
     workload: io_2ms
+    pinning:
+      enabled: false
+
+  - name: sharded_io_2ms_pinned
+    mode: sharded
+    workload: io_2ms
+    pinning:
+      enabled: true
+      coreMap: [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]
 
   # ------------------------------------------------------------------
   # Hybrid policy comparison — same workload, different routing

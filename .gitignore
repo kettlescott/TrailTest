@@ -40,3 +40,8 @@ build/
 .idea
 src/main.zip
 .java-version
+
+result/
+sharded_tiny/
+shared_tiny/
+src.zip

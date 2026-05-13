@@ -40,6 +40,7 @@ public final class TaskGenerator {
             WorkloadKind kind,
             long targetMillis,
             int cpuIterations,
+            boolean fixedCpuIterations,
             int memorySteps,
             int memoryBufferMB,
             MemoryBoundWorkload.AccessPattern memoryAccessPattern,
@@ -48,8 +49,9 @@ public final class TaskGenerator {
         public String summary() {
             return switch (kind) {
                 case CPU    -> String.format(
-                        "name=%s, kind=CPU, targetMillis=%d, cpuIterations=%d",
-                        name, targetMillis, cpuIterations);
+                        "name=%s, kind=CPU, targetMillis=%d, cpuIterations=%d%s",
+                        name, targetMillis, cpuIterations,
+                        fixedCpuIterations ? "  (fixed; calibration bypassed)" : "");
                 case MEMORY -> String.format(
                         "name=%s, kind=MEMORY, targetMillis=%d, memorySteps=%d, "
                                 + "bufferMB=%d, accessPattern=%s, writeBack=%s",
@@ -75,7 +77,16 @@ public final class TaskGenerator {
             long targetNanos = entry.targetMillis() * 1_000_000L;
             switch (entry.kind()) {
                 case CPU -> {
-                    this.cpuIterations = WorkloadCalibrator.calibrateIterations(targetNanos, baseSeed);
+                    // Fixed-iteration mode (cpuIterations > 0) bypasses the
+                    // calibrator entirely. Otherwise, fall back to the
+                    // existing targetMillis-driven calibration. Resolution
+                    // happens once here at construction so the per-task
+                    // hot path has no extra branching.
+                    if (entry.cpuIterations() > 0) {
+                        this.cpuIterations = entry.cpuIterations();
+                    } else {
+                        this.cpuIterations = WorkloadCalibrator.calibrateIterations(targetNanos, baseSeed);
+                    }
                     this.memorySteps     = 0;
                     this.memoryBuffer    = null;
                     this.memoryPattern   = null;
@@ -204,6 +215,7 @@ public final class TaskGenerator {
                     s.entry.kind(),
                     s.entry.targetMillis(),
                     s.cpuIterations,
+                    s.entry.usesFixedCpuIterations(),
                     s.memorySteps,
                     bufferMB,
                     s.memoryPattern,

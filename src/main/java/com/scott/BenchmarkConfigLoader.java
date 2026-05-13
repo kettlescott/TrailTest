@@ -297,8 +297,12 @@ public final class BenchmarkConfigLoader {
             // Preserve the optional memory() block — dropping it here
             // would silently revert MEMORY entries to default
             // accessPattern / bufferMB / writeBack whenever ratios
-            // needed rescaling.
-            out.add(new WorkloadEntry(e.name(), e.kind(), e.targetMillis(), e.ratio() / sum, e.memory()));
+            // needed rescaling. Likewise preserve cpuIterations so
+            // fixed-iteration CPU entries are not silently reverted to
+            // the calibration path.
+            out.add(new WorkloadEntry(
+                    e.name(), e.kind(), e.targetMillis(),
+                    e.ratio() / sum, e.memory(), e.cpuIterations()));
         }
         return out;
     }
@@ -318,10 +322,23 @@ public final class BenchmarkConfigLoader {
         String stopCommand = strVal(map, "stopCommand", null);
         long startupQuietPeriodMs = longVal(map, "startupQuietPeriodMs", 200L);
         long shutdownFlushMs      = longVal(map, "shutdownFlushMs",      100L);
+        // When true, JFR will record j.u.c lock / monitor events with a
+        // 0 ms threshold (jdk.JavaMonitorEnter, jdk.JavaMonitorWait,
+        // jdk.JavaMonitorInflate, jdk.ThreadPark). The default 'profile'
+        // preset uses a 10–20 ms threshold, which filters out almost all
+        // queue / semaphore contention in this benchmark.
+        boolean captureLocks      = boolVal(map, "captureLocks", false);
+        // JFR threshold for the lock/park event family (only used when
+        // captureLocks=true). Accepts JFR duration strings: "0ms",
+        // "500us", "1ms", "100us", etc. Smaller threshold = more events
+        // = larger .jfr file. "500us" is a good middle ground for
+        // queue-contention diagnosis without flooding the recording.
+        String lockEventThreshold = strVal(map, "lockEventThreshold", "0ms");
         PerfConfig perf = parsePerf(map.get("perf"));
         AsyncProfilerConfig async = parseAsyncProfiler(map.get("asyncProfiler"));
         return new ProfilingConfig(enabled, control, settings, start, stop, filename,
-                startCommand, stopCommand, startupQuietPeriodMs, shutdownFlushMs, perf, async);
+                startCommand, stopCommand, startupQuietPeriodMs, shutdownFlushMs,
+                perf, async, captureLocks, lockEventThreshold);
     }
 
     @SuppressWarnings("unchecked")
@@ -379,12 +396,16 @@ public final class BenchmarkConfigLoader {
             PinningConfig pinning = parsePinning(
                     (Map<String, Object>) rm.get("pinning"),
                     "runs[" + name + "].pinning");
+            // Per-run on/off switch. Defaults to true so existing
+            // configs without the field continue to run unchanged.
+            boolean enabled = boolVal(rm, "enabled", true);
             runs.add(new RunConfig(
                     name,
                     strVal(rm, "mode", null),
                     strVal(rm, "workload", null),
                     perRunHybrid,
-                    pinning
+                    pinning,
+                    enabled
             ));
         }
         return runs;

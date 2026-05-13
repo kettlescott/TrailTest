@@ -48,6 +48,10 @@ public class BenchmarkMain {
         System.out.println();
 
         for (RunConfig run : root.runs()) {
+            if (!run.enabled()) {
+                System.out.printf("--- Skipping run '%s' (enabled=false) ---%n%n", run.name());
+                continue;
+            }
             executeRun(root, run);
             System.out.println();
         }
@@ -99,8 +103,15 @@ public class BenchmarkMain {
             System.out.println("  Entries          :");
             int idx = 0;
             for (WorkloadEntry e : workload.entries()) {
-                System.out.printf("    [%d] %-20s kind=%-6s targetMillis=%-4d ratio=%.4f%n",
-                        idx++, e.displayName(), e.kind().name(), e.targetMillis(), e.ratio());
+                if (e.usesFixedCpuIterations()) {
+                    System.out.printf(
+                            "    [%d] %-20s kind=%-6s cpuIterations=%d ratio=%.4f%n",
+                            idx++, e.displayName(), e.kind().name(), e.cpuIterations(), e.ratio());
+                } else {
+                    System.out.printf(
+                            "    [%d] %-20s kind=%-6s targetMillis=%-4d ratio=%.4f%n",
+                            idx++, e.displayName(), e.kind().name(), e.targetMillis(), e.ratio());
+                }
             }
             System.out.println("  Calibration      :");
             int cidx = 0;
@@ -216,6 +227,7 @@ public class BenchmarkMain {
             summary.append("mode=").append(run.mode()).append('\n');
             summary.append("workload=").append(run.workload()).append('\n');
             summary.append("workerBudget=").append(global.workerCount()).append('\n');
+            summary.append("maxInFlight=").append(global.maxInflight()).append('\n');
             if (mode == BenchmarkMode.HYBRID && effectiveHybrid != null) {
                 int hybridTotal = effectiveHybrid.sharedWorkers() + effectiveHybrid.shardedWorkers();
                 summary.append("hybridTotalWorkers=").append(hybridTotal).append('\n');
@@ -241,6 +253,27 @@ public class BenchmarkMain {
             summary.append("maxQueueDepth=").append(maxDepth).append('\n');
             summary.append("queueDepthSamples=").append(depthSampler.sampleCount()).append("\n\n");
             summary.append(recorder.summary()).append('\n');
+
+            // -- Greppable per-CPU-entry cpuIterations marker --
+            // Emitted whether the count came from calibration or from a
+            // YAML-fixed cpuIterations entry, so analysis scripts can
+            // pull "cpuIterations=" uniformly across runs.
+            for (TaskGenerator.Calibration c : generator.calibrations()) {
+                if (c.kind() == WorkloadKind.CPU) {
+                    summary.append("cpuIterations[").append(c.name()).append("]=")
+                            .append(c.cpuIterations())
+                            .append(c.fixedCpuIterations() ? "  (fixed)" : "  (calibrated)")
+                            .append('\n');
+                }
+            }
+
+            // -- Overall executionMs summary lines --
+            LatencyRecorder overall = recorder.overall();
+            summary.append(String.format("executionMs.avg=%.3f%n", overall.avgExecution() / 1_000_000.0));
+            summary.append(String.format("executionMs.p50=%.3f%n", overall.p50Execution() / 1_000_000.0));
+            summary.append(String.format("executionMs.p95=%.3f%n", overall.p95Execution() / 1_000_000.0));
+            summary.append(String.format("executionMs.p99=%.3f%n", overall.p99Execution() / 1_000_000.0));
+
             summary.append(recorder.compactByKind());
 
             Path summaryPath = runDir.resolve("summary.txt");
@@ -291,6 +324,14 @@ public class BenchmarkMain {
                     measurement.submitted(), submitSecs, drainSecs, totalSecs,
                     avgDepth, maxDepth,
                     jfrOutput, perfOutput, asyncOutput);
+
+            // 6. Diagnostic: per-shard queue distribution (sharded mode only).
+            //    Pure stdout output — does not affect timing, latency, or
+            //    queue behavior. Runs after all metrics are finalized and
+            //    before dispatcher shutdown in the finally block.
+            if (dispatcher instanceof ShardedOnlyDispatcher d) {
+                d.executor().printQueueDistribution();
+            }
         } finally {
             try {
                 session.stop();
@@ -319,7 +360,8 @@ public class BenchmarkMain {
                 ? JfrProfiler.Control.API : JfrProfiler.Control.CLI;
         Path jfrOut = runDir.resolve(profiling.filename().replace("${runName}", runName));
         children.add(new JfrProfiler(ctrl, runName, profiling.settings(), jfrOut,
-                profiling.startCommand(), profiling.stopCommand()));
+                profiling.startCommand(), profiling.stopCommand(),
+                profiling.captureLocks(), profiling.lockEventThreshold()));
 
         PerfConfig perf = profiling.perf();
         if (perf != null && perf.enabled()) {

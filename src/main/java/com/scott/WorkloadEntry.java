@@ -21,24 +21,44 @@ public record WorkloadEntry(
         WorkloadKind kind,
         long targetMillis,
         double ratio,
-        MemoryWorkloadConfig memory
+        MemoryWorkloadConfig memory,
+        int cpuIterations
 ) {
 
-    /** Backwards-compatible constructor: no MEMORY config (defaults applied if needed). */
+    /** Backwards-compatible constructor: no MEMORY config, no fixed cpuIterations. */
     public WorkloadEntry(String name, WorkloadKind kind, long targetMillis, double ratio) {
-        this(name, kind, targetMillis, ratio, null);
+        this(name, kind, targetMillis, ratio, null, 0);
+    }
+
+    /** Backwards-compatible constructor: explicit MEMORY config, no fixed cpuIterations. */
+    public WorkloadEntry(String name, WorkloadKind kind, long targetMillis, double ratio,
+                         MemoryWorkloadConfig memory) {
+        this(name, kind, targetMillis, ratio, memory, 0);
     }
 
     public WorkloadEntry {
         if (kind == null) {
             throw new IllegalArgumentException("workload entry: kind is required");
         }
-        if (targetMillis <= 0) {
-            throw new IllegalArgumentException("workload entry: targetMillis must be > 0");
+        if (cpuIterations > 0 && kind != WorkloadKind.CPU) {
+            throw new IllegalArgumentException(
+                    "cpuIterations is only valid for CPU workloads");
+        }
+        // targetMillis is required UNLESS this is a fixed-iteration CPU
+        // entry (calibration is bypassed; targetMillis becomes a
+        // display-only label and may be 0 / omitted from YAML).
+        if (targetMillis <= 0 && cpuIterations <= 0) {
+            throw new IllegalArgumentException(
+                    "workload entry: targetMillis must be > 0 (or set cpuIterations > 0 for CPU)");
         }
         if (ratio <= 0.0 || !Double.isFinite(ratio)) {
             throw new IllegalArgumentException("workload entry: ratio must be > 0");
         }
+    }
+
+    /** True when this entry runs a fixed iteration count (no calibration). */
+    public boolean usesFixedCpuIterations() {
+        return kind == WorkloadKind.CPU && cpuIterations > 0;
     }
 
     public String displayName() {
@@ -63,11 +83,23 @@ public record WorkloadEntry(
             throw new IllegalArgumentException(path + ".kind is required (CPU|MEMORY|IO)");
         }
         WorkloadKind kind = WorkloadKind.fromLabel(String.valueOf(kindRaw));
+
+        // Optional fixed-iteration count. CPU-only validity is enforced
+        // by the record's compact constructor below.
+        Object ciRaw = em.get("cpuIterations");
+        int cpuIterations = ciRaw == null ? 0 : Integer.parseInt(String.valueOf(ciRaw));
+
+        // targetMillis is optional only for fixed-iteration CPU entries.
         Object tm = em.get("targetMillis");
-        if (tm == null) {
-            throw new IllegalArgumentException(path + ".targetMillis is required");
+        long targetMillis;
+        if (tm != null) {
+            targetMillis = Long.parseLong(String.valueOf(tm));
+        } else if (cpuIterations > 0) {
+            targetMillis = 0L;
+        } else {
+            throw new IllegalArgumentException(
+                    path + ".targetMillis is required (or set cpuIterations > 0 for CPU)");
         }
-        long targetMillis = Long.parseLong(String.valueOf(tm));
         Object r = em.get("ratio");
         double ratio = r == null ? 1.0 : Double.parseDouble(String.valueOf(r));
 
@@ -84,7 +116,7 @@ public record WorkloadEntry(
             }
         }
 
-        return new WorkloadEntry(name, kind, targetMillis, ratio, memory);
+        return new WorkloadEntry(name, kind, targetMillis, ratio, memory, cpuIterations);
     }
 
     private static MemoryWorkloadConfig parseMemory(Map<String, Object> mm, String path) {
@@ -109,6 +141,9 @@ public record WorkloadEntry(
           .append(", kind=").append(kind.name())
           .append(", targetMillis=").append(targetMillis)
           .append(", ratio=").append(String.format("%.4f", ratio));
+        if (kind == WorkloadKind.CPU && cpuIterations > 0) {
+            sb.append(", cpuIterations=").append(cpuIterations);
+        }
         if (kind == WorkloadKind.MEMORY) {
             sb.append(", ").append(memoryOrDefaults().summary());
         }
