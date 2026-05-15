@@ -43,7 +43,8 @@ public record PerfConfig(
         // is attached for the measurement window and its summary is written to
         // <runName>.perf.stat.txt. Defaults to false to preserve existing runs.
         Boolean enablePerfStat,
-        List<String> perfStatEvents
+        List<String> perfStatEvents,
+        String perfStatFilename
 ) {
     public String binaryOrDefault()    { return binary    == null || binary.isBlank()    ? "perf"             : binary;    }
     public int    frequencyOrDefault() { return frequency == null                        ? 99                 : frequency; }
@@ -71,6 +72,11 @@ public record PerfConfig(
     public List<String> perfStatEventsOrDefault() {
         return (perfStatEvents == null || perfStatEvents.isEmpty())
                 ? DEFAULT_PERF_STAT_EVENTS : perfStatEvents;
+    }
+
+    public String perfStatFilenameOrDefault() {
+        return (perfStatFilename == null || perfStatFilename.isBlank())
+                ? "${runName}.perf.stat.txt" : perfStatFilename;
     }
 
     /**

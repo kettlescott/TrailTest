@@ -51,6 +51,29 @@ profiling:
       - "context-switches,cpu-migrations"
     filename: "${runName}.perf.data"
 
+    # Optional `perf stat` aggregate counters (independent of perf record).
+    # Produces <runName>.perf.stat.txt for paper-quality totals:
+    # IPC, cache miss rate, LLC miss rate, ctx-switches / migrations per task, etc.
+    # Defaults to disabled; omit the two fields below to keep current behaviour.
+    # If perfStatEvents is omitted, PerfConfig.DEFAULT_PERF_STAT_EVENTS is used
+    # (a conservative, portable subset). Override below to request advanced
+    # events such as L1-dcache-*, LLC-stores, alignment-faults, etc.
+    enablePerfStat: true
+    perfStatFilename: "${runName}.perf.stat.txt"
+    perfStatEvents:
+      - cycles
+      - instructions
+      - branches
+      - branch-misses
+      - cache-references
+      - cache-misses
+      - LLC-loads
+      - LLC-load-misses
+      - context-switches
+      - cpu-migrations
+      - page-faults
+      - task-clock
+
   asyncProfiler:
     enabled: true
     binary: /home/wangs100/test/async-profiler-4.0-linux-x64/bin/asprof

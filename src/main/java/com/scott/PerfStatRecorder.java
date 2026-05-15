@@ -37,7 +37,8 @@ public final class PerfStatRecorder {
                     "perf stat is Linux-only; got os.name=" + System.getProperty("os.name"));
         }
 
-        Path output = runDir.resolve(runName + ".perf.stat.txt");
+        Path output = runDir.resolve(
+                cfg.perfStatFilenameOrDefault().replace("${runName}", runName));
         Files.createDirectories(output.getParent());
 
         long pid = ProcessHandle.current().pid();

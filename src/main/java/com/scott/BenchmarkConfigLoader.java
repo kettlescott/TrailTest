@@ -386,7 +386,7 @@ public final class BenchmarkConfigLoader {
             for (Object o : pselist) perfStatEvents.add(String.valueOf(o));
         }
         return new PerfConfig(penabled, binary, freq, clock, callGraph, extra, pfile, mmapPages,
-                enablePerfStat, perfStatEvents);
+                enablePerfStat, perfStatEvents, strVal(pm, "perfStatFilename", null));
     }
 
     @SuppressWarnings("unchecked")

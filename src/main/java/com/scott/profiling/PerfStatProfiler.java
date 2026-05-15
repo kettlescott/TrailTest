@@ -34,7 +34,8 @@ public final class PerfStatProfiler implements Profiler {
 
     public Path outputFile() {
         if (config == null || !config.perfStatEnabled()) return null;
-        return runDir.resolve(runName + ".perf.stat.txt");
+        return runDir.resolve(
+                config.perfStatFilenameOrDefault().replace("${runName}", runName));
     }
 
     @Override
