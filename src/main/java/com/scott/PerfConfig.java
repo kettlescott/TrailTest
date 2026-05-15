@@ -37,7 +37,13 @@ public record PerfConfig(
         String callGraph,
         List<String> extraArgs,
         String filename,
-        Integer mmapPages
+        Integer mmapPages,
+        // --- perf stat (aggregate hardware-counter totals) ---
+        // Independent of perf record. When true, a `perf stat -p PID` subprocess
+        // is attached for the measurement window and its summary is written to
+        // <runName>.perf.stat.txt. Defaults to false to preserve existing runs.
+        Boolean enablePerfStat,
+        List<String> perfStatEvents
 ) {
     public String binaryOrDefault()    { return binary    == null || binary.isBlank()    ? "perf"             : binary;    }
     public int    frequencyOrDefault() { return frequency == null                        ? 99                 : frequency; }
@@ -45,6 +51,27 @@ public record PerfConfig(
     public String callGraphOrDefault() { return callGraph == null || callGraph.isBlank() ? "none"             : callGraph; }
     public String filenameOrDefault()  { return filename  == null || filename.isBlank()  ? "${runName}.perf.data" : filename; }
     public List<String> extraArgsOrDefault() { return extraArgs == null ? List.of() : extraArgs; }
+
+    public boolean perfStatEnabled() { return enablePerfStat != null && enablePerfStat; }
+
+    /** Default event list for perf stat, used when YAML omits {@code perfStatEvents}.
+     *  Kept intentionally conservative so it works across CPUs/VMs; advanced
+     *  events (L1-dcache-*, LLC-stores, alignment-faults, ...) can still be
+     *  requested explicitly via the YAML {@code perfStatEvents} field. */
+    public static final List<String> DEFAULT_PERF_STAT_EVENTS = List.of(
+            "cycles", "instructions",
+            "branches", "branch-misses",
+            "cache-references", "cache-misses",
+            "LLC-loads", "LLC-load-misses",
+            "context-switches", "cpu-migrations",
+            "page-faults",
+            "task-clock"
+    );
+
+    public List<String> perfStatEventsOrDefault() {
+        return (perfStatEvents == null || perfStatEvents.isEmpty())
+                ? DEFAULT_PERF_STAT_EVENTS : perfStatEvents;
+    }
 
     /**
      * Per-CPU ring-buffer size for {@code perf record}, in pages, must be

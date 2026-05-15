@@ -371,6 +371,13 @@ public class BenchmarkMain {
             children.add(0, new PerfProfiler(perf, runName, runDir));
         }
 
+        // Independent `perf stat` aggregate counters. Off by default; produces
+        // <runName>.perf.stat.txt. Inserted at the front so it brackets JFR
+        // like perf record does. Independent of perf record's enabled flag.
+        if (perf != null && perf.perfStatEnabled()) {
+            children.add(0, new com.scott.profiling.PerfStatProfiler(perf, runName, runDir));
+        }
+
         AsyncProfilerConfig async = profiling.asyncProfiler();
         if (async != null && async.enabled()) {
             // Append LAST: start order = [perf, jfr, async]; stop order =

@@ -375,7 +375,18 @@ public final class BenchmarkConfigLoader {
         if (ea instanceof List<?> ealist) {
             for (Object o : ealist) extra.add(String.valueOf(o));
         }
-        return new PerfConfig(penabled, binary, freq, clock, callGraph, extra, pfile, mmapPages);
+        // Optional `perf stat` aggregate counters. Both fields default to
+        // "absent" so configs that don't mention them behave exactly as before.
+        Boolean enablePerfStat = pm.get("enablePerfStat") == null
+                ? null : Boolean.parseBoolean(String.valueOf(pm.get("enablePerfStat")));
+        List<String> perfStatEvents = null;
+        Object pse = pm.get("perfStatEvents");
+        if (pse instanceof List<?> pselist) {
+            perfStatEvents = new ArrayList<>();
+            for (Object o : pselist) perfStatEvents.add(String.valueOf(o));
+        }
+        return new PerfConfig(penabled, binary, freq, clock, callGraph, extra, pfile, mmapPages,
+                enablePerfStat, perfStatEvents);
     }
 
     @SuppressWarnings("unchecked")
