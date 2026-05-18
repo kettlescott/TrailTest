@@ -297,12 +297,12 @@ public final class BenchmarkConfigLoader {
             // Preserve the optional memory() block — dropping it here
             // would silently revert MEMORY entries to default
             // accessPattern / bufferMB / writeBack whenever ratios
-            // needed rescaling. Likewise preserve cpuIterations so
-            // fixed-iteration CPU entries are not silently reverted to
-            // the calibration path.
+            // needed rescaling. Likewise preserve cpuIterations /
+            // memorySteps so fixed-sized entries are not silently
+            // reverted to the calibration path.
             out.add(new WorkloadEntry(
                     e.name(), e.kind(), e.targetMillis(),
-                    e.ratio() / sum, e.memory(), e.cpuIterations()));
+                    e.ratio() / sum, e.memory(), e.cpuIterations(), e.memorySteps()));
         }
         return out;
     }

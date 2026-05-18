@@ -62,12 +62,30 @@ public final class MemoryBoundWorkload implements Workload {
                 x ^= (x >>> 7);
                 x ^= (x << 17);
                 int idx = (int) ((x >>> 1) % n);
+                // Data-dependent READ of buf[idx] folded back into x.
+                // Without this, the writeBack=false RANDOM branch never
+                // touches buf and the JIT collapses the loop to pure
+                // xorshift ALU — making execution time orders of
+                // magnitude smaller than the intended memory-bound cost
+                // (observed: p50 ≈ 1 µs for steps=320 on 512 MiB buffer,
+                // which is physically impossible for real RANDOM access).
+                // Mirror of the SEQUENTIAL branch's `x += buf[idx]`.
                 x += buf[idx];
                 if (wb) buf[idx] = x;
             }
         }
+        // Defeat aggressive dead-store elimination of the returned value
+        // by writing into a static volatile sink. Task already stores
+        // workload.execute() into a field, but that field can in
+        // principle be proven dead by escape analysis; the volatile
+        // store is a cheap insurance policy outside the inner loop.
+        BLACKHOLE = x;
         return x;
     }
+
+    /** Volatile sink — prevents JIT from proving execute()'s result is dead. */
+    @SuppressWarnings("unused")
+    private static volatile long BLACKHOLE;
 
     public static AccessPattern parsePattern(String raw) {
         if (raw == null) return AccessPattern.SEQUENTIAL;

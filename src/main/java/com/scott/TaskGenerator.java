@@ -44,7 +44,8 @@ public final class TaskGenerator {
             int memorySteps,
             int memoryBufferMB,
             MemoryBoundWorkload.AccessPattern memoryAccessPattern,
-            boolean memoryWriteBack
+            boolean memoryWriteBack,
+            boolean fixedMemorySteps
     ) {
         public String summary() {
             return switch (kind) {
@@ -53,9 +54,10 @@ public final class TaskGenerator {
                         name, targetMillis, cpuIterations,
                         fixedCpuIterations ? "  (fixed; calibration bypassed)" : "");
                 case MEMORY -> String.format(
-                        "name=%s, kind=MEMORY, targetMillis=%d, memorySteps=%d, "
+                        "name=%s, kind=MEMORY, targetMillis=%d, memorySteps=%d%s, "
                                 + "bufferMB=%d, accessPattern=%s, writeBack=%s",
                         name, targetMillis, memorySteps,
+                        fixedMemorySteps ? " (fixed)" : "",
                         memoryBufferMB, memoryAccessPattern, memoryWriteBack);
                 case IO     -> String.format(
                         "name=%s, kind=IO, targetMillis=%d  (no calibration; parkNanos)",
@@ -98,8 +100,16 @@ public final class TaskGenerator {
                     this.memoryBuffer    = buf;
                     this.memoryPattern   = mem.accessPattern();
                     this.memoryWriteBack = mem.writeBack();
-                    this.memorySteps     = WorkloadCalibrator.calibrateMemorySteps(
-                            targetNanos, buf, this.memoryPattern, this.memoryWriteBack, baseSeed);
+                    // Fixed-step mode (memorySteps > 0) bypasses the
+                    // calibrator entirely, mirroring CPU's cpuIterations
+                    // fast-path. Otherwise fall back to the existing
+                    // targetMillis-driven calibration.
+                    if (entry.memorySteps() > 0) {
+                        this.memorySteps = entry.memorySteps();
+                    } else {
+                        this.memorySteps = WorkloadCalibrator.calibrateMemorySteps(
+                                targetNanos, buf, this.memoryPattern, this.memoryWriteBack, baseSeed);
+                    }
                     this.cpuIterations   = 0;
                 }
                 case IO -> {
@@ -219,7 +229,8 @@ public final class TaskGenerator {
                     s.memorySteps,
                     bufferMB,
                     s.memoryPattern,
-                    s.memoryWriteBack));
+                    s.memoryWriteBack,
+                    s.entry.usesFixedMemorySteps()));
         }
         return out;
     }

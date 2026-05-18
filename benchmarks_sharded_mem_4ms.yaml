@@ -1,0 +1,97 @@
+global:
+  workerCount: 32
+  maxInflight: 64
+  seed: 3735928559
+  warmupSeconds: 10
+  measurementSeconds: 60
+  taskCount: 0
+
+workloads:
+  # Memory-bound task. See benchmarks_shared_mem_4ms.yaml for parameter
+  # commentary. Identical knobs here (including the fixed memorySteps)
+  # so shared-vs-sharded is a clean A/B — both sides do exactly the same
+  # amount of work per task, regardless of host calibration drift.
+  mem_4ms:
+    - kind: MEMORY
+      memorySteps: 30729
+      ratio: 1.0
+      memory:
+        accessPattern: random
+        bufferMB: 64
+        writeBack: false
+
+profiling:
+  enabled: true
+  control: api
+  settings: profile
+  captureLocks: true
+  lockEventThreshold: 10us
+  start: beforeMeasurement
+  stop: afterMeasurement
+  filename: "${runName}.jfr"
+  startCommand: "JFR.start name=${runName} settings=${settings} filename=${outputFile}"
+  stopCommand: "JFR.stop name=${runName} filename=${outputFile}"
+
+  perf:
+    enabled: true
+    binary: perf
+    frequency: 99
+    clock: monotonic
+    callGraph: dwarf
+    mmapPages: 2048
+    extraArgs:
+      - "--no-buildid"
+      - "--no-buildid-cache"
+      - "-z"
+      - "-e"
+      - "cycles,instructions,cache-references,cache-misses,LLC-loads,LLC-load-misses"
+      - "-e"
+      - "context-switches,cpu-migrations"
+    filename: "${runName}.perf.data"
+
+    enablePerfStat: true
+    perfStatFilename: "${runName}.perf.stat.txt"
+    perfStatEvents:
+      - cycles
+      - instructions
+      - branches
+      - branch-misses
+      - cache-references
+      - cache-misses
+      - LLC-loads
+      - LLC-load-misses
+      - context-switches
+      - cpu-migrations
+      - page-faults
+      - task-clock
+
+  asyncProfiler:
+    enabled: true
+    binary: /home/wangs100/test/async-profiler-4.0-linux-x64/bin/asprof
+    event: wall
+    interval: 1ms
+    format: jfr
+    filename: "${runName}.async.jfr"
+    extraArgs: []
+
+runs:
+  - name: sharded_mem_4ms
+    mode: sharded
+    workload: mem_4ms
+    enabled: false
+    pinning:
+      enabled: false
+
+  - name: sharded_mem_4ms_pinned
+    mode: sharded
+    workload: mem_4ms
+    enabled: true
+    pinning:
+      enabled: true
+      coreMap: [
+         0,  1,  2,  3,  4,  5,  6,  7,
+         8,  9, 10, 11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20, 21, 22, 23,
+        24, 25, 26, 27, 28, 29, 30, 31
+      ]
+
