@@ -15,8 +15,30 @@ public final class ShardedOnlyDispatcher implements Dispatcher {
     }
 
     public ShardedOnlyDispatcher(int workerCount, PinningConfig pinning) {
+        this(workerCount, pinning, null);
+    }
+
+    /**
+     * Diagnostics-aware constructor. {@code workerStats} may be null
+     * (default) — when non-null, each entry is wired to one
+     * {@link ShardedWorker} so per-worker tail statistics can be
+     * collected without any cross-thread synchronisation.
+     */
+    public ShardedOnlyDispatcher(int workerCount, PinningConfig pinning, WorkerStats[] workerStats) {
+        this(workerCount, pinning, workerStats, ShardedRoutingConfig.defaults());
+    }
+
+    /**
+     * Routing-aware constructor. {@code routing} controls how tasks are
+     * mapped to shards at submit time (see {@link ShardedRoutingConfig}).
+     */
+    public ShardedOnlyDispatcher(int workerCount,
+                                 PinningConfig pinning,
+                                 WorkerStats[] workerStats,
+                                 ShardedRoutingConfig routing) {
         PinningConfig p = pinning == null ? PinningConfig.disabled() : pinning;
-        this.executor = new ShardedExecutor(workerCount, p.enabled(), p.coreMap());
+        this.executor = new ShardedExecutor(workerCount, p.enabled(), p.coreMap(), workerStats,
+                routing == null ? ShardedRoutingConfig.defaults() : routing);
     }
 
     @Override

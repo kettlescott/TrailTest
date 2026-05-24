@@ -68,6 +68,49 @@ profiling:
     filename: "${runName}.async.jfr"
     extraArgs: []
 
+# Optional per-worker / per-shard diagnostics (SHARDED mode only).
+# All flags default to false / off; the entire block can be omitted with
+# zero effect on benchmark behavior. Use this to investigate tail
+# latency / queue imbalance on IO-bound or pinned runs.
+#
+#   perWorkerLatency    : HEAVY — adds one LatencyRecorder per worker.
+#                         Each recorder keeps four long[] buffers
+#                         (submitOverhead + queueWait + execution +
+#                         endToEnd). Cost ≈ tasks × 4 × 8 bytes. Enable
+#                         only on diagnostic runs with a bounded
+#                         taskCount; leave off for headline experiments.
+#   queueDepthByShard   : cheap; aggregates per-shard queue depth across
+#                         windows.
+#   windowSampling      : cheap; compact per-window summaries
+#                         (completedPerWorker min/mean/max/maxOverMin +
+#                         maxShardQueueDepth + queueDepthImbalance).
+#   slowExecutionMicros : static threshold for slow-burst counters.
+#                         A task is "slow" if execution exceeds this.
+#                         For IO tasks targeting ~4 ms park time, a
+#                         conservative threshold ~ targetMillis * 2
+#                         (e.g. 8000µs) keeps the slow counter
+#                         meaningful; tune to your run.
+diagnostics:
+  enabled: true
+  perWorkerLatency: false        # HEAVY: enable only for bounded diagnostic runs
+  queueDepthByShard: true
+  windowSampling: true
+  windowCorrelation: true
+  windowSeconds: 1
+  slowExecutionMicros: 8000
+  # Per-shard / per-window CSV export (SHARDED only). Writes:
+  #   per_shard_latency.csv         — one row per shard.
+  #   per_window_shard_latency.csv  — completedTasks + enqueuedTasks +
+  #                                   throughput + backlogDelta + exec/
+  #                                   qwait/e2e avg+p95+p99 + depth.
+  #   shard_window_correlation.csv  — 6 Pearson r per shard, including
+  #                                   execP95↔throughput, execP95↔backlogDelta,
+  #                                   and backlogDelta→depth_{t+1}.
+  shardLatencyCsv: true
+  shardWindowMillis: 100
+  # Optional per-task CSV (HEAVY — diagnostic runs only). OFF by default.
+  rawTaskLogging: false
+
 runs:
   - name: sharded_io_4ms
     mode: sharded

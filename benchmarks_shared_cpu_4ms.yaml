@@ -16,7 +16,7 @@ workloads:
   #   roughly 1.5–2 ns per iteration. 2_000_000 iters ≈ 3–4 ms wall.
   #   Re-tune if you need a different target:
   #     1) run once with `targetMillis: 4` (calibration mode)
-  #     2) read `cpuIterations[<entry>]=N (calibrated)` from summary.txt
+  #     2) read `cpuIterations[<entry>]=N (calibrated)` from summary_sharded.txt
   #     3) paste N back here as cpuIterations
   cpu_4ms:
     - { kind: CPU, cpuIterations: 2000000, ratio: 1.0 }
@@ -79,6 +79,19 @@ profiling:
     format: jfr
     filename: "${runName}.async.jfr"
     extraArgs: []
+
+# Optional diagnostics. SHARED mode is supported via a single
+# aggregate WorkerStats entry (queueId=0 / worker[0]) hooked into the
+# JDK ThreadPoolExecutor.afterExecute() callback — zero per-task
+# allocation. See benchmarks_sharded_*.yaml for the per-shard variant.
+diagnostics:
+  enabled: true
+  perWorkerLatency: false        # HEAVY: enable only for bounded diagnostic runs
+  queueDepthByShard: true        # SHARED → single queue depth (queueId=0)
+  windowSampling: true
+  windowCorrelation: true        # depth ↔ exec / slow / completed / qw Pearson r
+  windowSeconds: 1
+  slowExecutionMicros: 200
 
 runs:
   - name: shared_cpu_4ms

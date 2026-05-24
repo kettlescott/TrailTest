@@ -71,6 +71,18 @@ public final class LatencyRecorder {
         long ex = task.executionTimeNanos();
         long e2e = task.endToEndLatencyNanos();
 
+        recordRaw(so, qw, ex, e2e);
+    }
+
+    /**
+     * Records primitive latency samples directly.
+     *
+     * <p>Used by the non-retaining measurement path that aggregates
+     * latencies online from completion callbacks without storing full
+     * {@link Task} objects.</p>
+     */
+    public void recordRaw(long so, long qw, long ex, long e2e) {
+
         submitOverheadNanos.add(so);
         queueWaitNanos.add(qw);
         executionNanos.add(ex);

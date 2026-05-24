@@ -3,6 +3,10 @@ package com.scott;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -28,7 +32,33 @@ public class BenchmarkMain {
 
     private static final int MIN_USEFUL_SAMPLES = 100;
 
-    private record PhaseResult(List<Task> tasks,
+    /**
+     * Tiny sink for the optional {@code task_execution_times.csv}
+     * streaming export. Holds the writer plus enough context to compute
+     * {@code shardId} for each completed task. Synchronisation is on
+     * the writer itself; the JDK's {@link BufferedWriter} is not
+     * thread-safe.
+     */
+    private static final class TaskExecutionCsvSink {
+        final BufferedWriter writer;
+        final int workerCount;
+        final ShardedRoutingConfig routing;
+        final boolean isShared;
+
+        TaskExecutionCsvSink(BufferedWriter writer,
+                             int workerCount,
+                             ShardedRoutingConfig routing,
+                             boolean isShared) {
+            this.writer = writer;
+            this.workerCount = workerCount;
+            this.routing = routing == null ? ShardedRoutingConfig.defaults() : routing;
+            this.isShared = isShared;
+        }
+    }
+
+    private record PhaseResult(List<Task> retainedTasks,
+                               PerKindLatencyRecorder recorder,
+                               TailSnapshot tail,
                                int submitted,
                                long submitStartNanos,
                                long submitEndNanos,
@@ -39,6 +69,25 @@ public class BenchmarkMain {
                                int backpressureEvents,
                                long backpressureWaitNanos,
                                long nextTaskId) {}
+
+    private record TailTaskSample(long taskId,
+                                  WorkloadKind kind,
+                                  boolean measurement,
+                                  long enqueuedNanos,
+                                  long startNanos,
+                                  long finishNanos,
+                                  long queueWaitNanos,
+                                  long executionNanos,
+                                  long endToEndNanos) {}
+
+    private record TailSnapshot(int completedInSubmit,
+                                int completedInShutdown,
+                                int completedInDrain,
+                                int notStarted,
+                                int notFinished,
+                                int finishedAfterDrain,
+                                long maxFinishNanos,
+                                List<TailTaskSample> topByEndToEnd) {}
 
     public static void main(String[] args) throws Exception {
         Path configPath = parseConfigPath(args);
@@ -69,17 +118,70 @@ public class BenchmarkMain {
             throw new IllegalArgumentException("runs[].mode must be shared|sharded|hybrid for YAML runs: " + run.mode());
         }
 
-        TaskGenerator generator = new TaskGenerator(workload, global.seed());
+        TaskGenerator generator = new TaskGenerator(
+                workload, global.seed(), global.workloadSeedMode(), global.workloadSeed());
+
+        // Configure the memory-bound workload's dead-store sink for this
+        // run. SHARED_VOLATILE preserves legacy behaviour; THREAD_LOCAL
+        // avoids cross-core cache-line invalidation on the blackhole
+        // store. Safe to call here (before workers start).
+        MemoryBoundWorkload.configureBlackhole(global.blackholeMode());
 
         // Resolve effective hybrid config (per-run override > root). Required
         // for HYBRID mode; ignored for SHARED/SHARDED.
         HybridConfig effectiveHybrid = run.hybrid() != null ? run.hybrid() : root.hybrid();
         PinningConfig pinning = run.pinning() == null ? PinningConfig.disabled() : run.pinning();
         pinning.validate(run.name(), mode, global.workerCount());
-        Dispatcher dispatcher = createDispatcher(mode, global.workerCount(), effectiveHybrid, pinning);
 
+        // Optional diagnostics — supported in SHARDED and SHARED modes.
+        // HYBRID is not wired in this revision (kept minimal per spec).
+        // Topology mapping:
+        //   SHARDED: workerCount = global.workerCount(),  queueCount = same
+        //   SHARED : workerCount = 1,                     queueCount = 1
+        // The SHARED entry aggregates all pool threads (queueId=0).
+        DiagnosticsConfig diagCfg = root.diagnosticsOrDisabled();
+        final boolean diagSupported =
+                (mode == BenchmarkMode.SHARDED || mode == BenchmarkMode.SHARED) && diagCfg.anyEnabled();
+        final int diagWorkerCount = (mode == BenchmarkMode.SHARED) ? 1 : global.workerCount();
+        final int diagQueueCount  = diagWorkerCount;
+        final DiagnosticsCollector diagnostics = diagSupported
+                ? new DiagnosticsCollector(
+                        diagCfg,
+                        diagWorkerCount, diagQueueCount,
+                        global.taskCount() > 0 ? global.taskCount() : 0)
+                : null;
+        WorkerStats[] workerStats = diagnostics == null ? null : diagnostics.workerStats();
+
+        // Run directory + optional per-task attribution recorder are
+        // created BEFORE the dispatcher so worker threads (especially
+        // sharded workers, which start in the executor constructor)
+        // see ACTIVE != null and can register their per-thread buffers
+        // at startup via ensureBufferForCurrentThread(workerId, shardId).
         Path runDir = Paths.get("results", run.name());
         Files.createDirectories(runDir);
+
+        AttributionConfig attrCfg = root.attributionOrDisabled();
+        AttributionRecorder attribution = AttributionRecorder.createIfEnabled(
+                attrCfg,
+                run.name(),
+                mode.name(),
+                run.workload(),
+                runDir);
+        AttributionRecorder.setActive(attribution);
+
+        Dispatcher dispatcher;
+        if (mode == BenchmarkMode.SHARDED && workerStats != null) {
+            dispatcher = new ShardedOnlyDispatcher(global.workerCount(), pinning, workerStats,
+                    global.shardedRouting());
+        } else if (mode == BenchmarkMode.SHARED && workerStats != null) {
+            // Single-entry stats array — afterExecute() in the shared TPE
+            // calls stats[0].onTaskCompleted(task) per measurement task.
+            dispatcher = new SharedOnlyDispatcher(global.workerCount(), pinning, workerStats[0]);
+        } else {
+            dispatcher = createDispatcher(mode, global.workerCount(), effectiveHybrid, pinning,
+                    global.shardedRouting());
+        }
+
 
         ProfilingConfig profiling = root.profiling() == null
                 ? new ProfilingConfig(false, "cli", "profile", "beforeMeasurement", "afterMeasurement",
@@ -96,6 +198,27 @@ public class BenchmarkMain {
 
         MeasurementContext ctx = new MeasurementContext(
                 run.name(), mode.name(), run.workload(), global.workerCount(), hybridPolicy);
+
+        // Optional streaming per-task execution CSV. Opened before
+        // measurement phase (warmup is intentionally excluded), closed
+        // in the finally block below. When disabled the field stays
+        // null and there is zero overhead.
+        BufferedWriter taskExecCsvWriter = null;
+        TaskExecutionCsvSink taskExecCsvSink = null;
+        if (diagCfg.taskExecutionCsv()) {
+            Path csvPath = runDir.resolve("task_execution_times.csv");
+            taskExecCsvWriter = Files.newBufferedWriter(csvPath,
+                    StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING);
+            taskExecCsvWriter.write("kind,taskId,shardId,queueWaitNanos,executionNanos,endToEndNanos\n");
+            taskExecCsvSink = new TaskExecutionCsvSink(
+                    taskExecCsvWriter,
+                    global.workerCount(),
+                    global.shardedRouting(),
+                    mode == BenchmarkMode.SHARED);
+        }
+
 
         try {
             System.out.println("========================================");
@@ -152,7 +275,13 @@ public class BenchmarkMain {
             // 1. Warmup — profilers are NOT running. No submit-end
             // callback needed; the warmup phase has no observation window.
             PhaseResult warmup = runPhase(dispatcher, generator, global.maxInflight(),
-                    global.warmupSeconds() * 1_000_000_000L, false, 0, taskId, null);
+                    global.warmupSeconds() * 1_000_000_000L,
+                    false,
+                    false,
+                    0,
+                    taskId,
+                    null,
+                    null);
             taskId = warmup.nextTaskId();
 
             System.out.printf("  Warmup done      : %,d tasks in %.3f s (submit) + %.3f s (drain)%n",
@@ -172,6 +301,35 @@ public class BenchmarkMain {
             QueueDepthSampler depthSampler = new QueueDepthSampler(dispatcher, 10L);
             depthSampler.start();
 
+            // Optional diagnostics window sampler — opt-in, supported
+            // for both SHARDED (per-shard queue probe) and SHARED
+            // (single queue probe via SharedExecutor.getQueueSize()).
+            // Aligned exactly with the submit window (started here,
+            // stopped in the onSubmitEnd callback below).
+            if (diagnostics != null) {
+                if (dispatcher instanceof ShardedOnlyDispatcher dShardDiag) {
+                    diagnostics.startSampler(dShardDiag.executor());
+                } else if (dispatcher instanceof SharedOnlyDispatcher dSharedDiag) {
+                    SharedExecutor sx = dSharedDiag.executor();
+                    diagnostics.startSampler((int q) -> sx.getQueueSize());
+                }
+            }
+
+            // Per-shard / per-window latency analyzer (SHARDED only).
+            // OFF by default; gated by diagnostics.shardLatencyCsv. Hot
+            // path is unchanged — all required per-task fields are
+            // already on Task. Only a 10 ms-cadence depth sampler runs
+            // during the submit window.
+            final ShardLatencyAnalyzer shardAnalyzer =
+                    (diagCfg.shardLatencyCsv() && dispatcher instanceof ShardedOnlyDispatcher dShardA)
+                            ? new ShardLatencyAnalyzer(
+                                    global.workerCount(),
+                                    global.measurementSeconds() * 1000L)
+                            : null;
+            if (shardAnalyzer != null) {
+                shardAnalyzer.start(((ShardedOnlyDispatcher) dispatcher).executor());
+            }
+
             // 3. Measurement window: SUBMIT WINDOW ONLY.
             //    Bracketed by JFR anchor events at submitStart and
             //    submitEnd. The post-submit drain is excluded from all
@@ -185,8 +343,15 @@ public class BenchmarkMain {
                     ? new int[dShardEnd.executor().getWorkerCount()] : null;
 
             session.markMeasurementStart(ctx);
+            boolean retentionRequiredByDiagnostics =
+                    (mode == BenchmarkMode.SHARDED) && (diagCfg.shardLatencyCsv() || diagCfg.rawTaskLogging());
+            boolean effectiveRetainCompletedTasks = global.retainCompletedTasks() || retentionRequiredByDiagnostics;
             PhaseResult measurement = runPhase(dispatcher, generator, global.maxInflight(),
-                    global.measurementSeconds() * 1_000_000_000L, true, global.taskCount(), taskId,
+                    global.measurementSeconds() * 1_000_000_000L,
+                    true,
+                    effectiveRetainCompletedTasks,
+                    global.taskCount(),
+                    taskId,
                     () -> {
                         // Fired immediately after the last submit and
                         // BEFORE drain — this is what makes the window
@@ -204,6 +369,13 @@ public class BenchmarkMain {
                         // is a safe no-op on the happy path.
                         session.markMeasurementStop(ctx);
                         depthSampler.stop();
+                        // Diagnostics sampler — same window as submit.
+                        if (diagnostics != null) {
+                            diagnostics.stopSampler();
+                        }
+                        if (shardAnalyzer != null) {
+                            shardAnalyzer.stop();
+                        }
                         // DIAGNOSTIC: snapshot per-shard queue depth at
                         // submitEnd BEFORE drain consumes them. Read-only
                         // accessor; no timing impact.
@@ -219,7 +391,8 @@ public class BenchmarkMain {
                         } catch (Exception e) {
                             System.err.println("[profiling] session.stop() failed at submitEnd: " + e);
                         }
-                    });
+                    },
+                    taskExecCsvSink);
 
             // Profilers were already stopped inside the onSubmitEnd
             // callback above (at submitEnd, before drain). Nothing to
@@ -237,10 +410,7 @@ public class BenchmarkMain {
             double avgDepth = depthSampler.avgQueueDepth();
             int    maxDepth = depthSampler.maxQueueDepth();
 
-            PerKindLatencyRecorder recorder = new PerKindLatencyRecorder(measurement.submitted());
-            for (Task task : measurement.tasks()) {
-                recorder.record(task);
-            }
+            PerKindLatencyRecorder recorder = measurement.recorder();
 
             if (recorder.recordedTasks() < MIN_USEFUL_SAMPLES) {
                 System.err.printf("  *** WARNING: only %d tasks recorded — too few for percentile analysis.%n",
@@ -266,6 +436,16 @@ public class BenchmarkMain {
             summary.append("pinningCoreMap=")
                     .append(pinning.coreMap() == null ? "null" : java.util.Arrays.toString(pinning.coreMap()))
                     .append('\n');
+            // Artifact-isolation knobs (see ShardedRoutingConfig,
+            // WorkloadSeedMode, BlackholeMode). Defaults preserve the
+            // legacy behaviour; non-default values flag an A/B run.
+            summary.append("shardedRouting.mode=").append(global.shardedRouting().mode()).append('\n');
+            summary.append("shardedRouting.seed=").append(global.shardedRouting().routingSeed()).append('\n');
+            summary.append("workloadSeedMode=").append(global.workloadSeedMode()).append('\n');
+            summary.append("workloadSeed=").append(global.workloadSeed()).append('\n');
+            summary.append("blackholeMode=").append(global.blackholeMode()).append('\n');
+            summary.append("retainCompletedTasks=").append(effectiveRetainCompletedTasks).append('\n');
+            summary.append("retainCompletedTasks.configured=").append(global.retainCompletedTasks()).append('\n');
             summary.append("submitted=").append(measurement.submitted()).append('\n');
             summary.append("submitDurationSeconds=").append(String.format("%.3f", submitSecs)).append('\n');
             // taskDrainDurationSeconds: time spent waiting for in-flight
@@ -309,7 +489,81 @@ public class BenchmarkMain {
 
             summary.append(recorder.compactByKind());
 
-            Path summaryPath = runDir.resolve("summary.txt");
+            // Tail / drain diagnostic — emitted to BOTH summary_sharded.txt and
+            // stdout, byte-identical formatting via appendTailDiagnostics.
+            // Placed AFTER the standard latency summary and BEFORE the
+            // per-worker / queue-depth diagnostics sections so the
+            // ordering in summary_sharded.txt mirrors what an operator sees on
+            // the console.
+            StringBuilder tailDiag = new StringBuilder();
+            appendTailDiagnostics(tailDiag, measurement, dispatcher, shardQueueAtSubmitEnd);
+            summary.append(tailDiag);
+
+            // Optional diagnostics block — SHARDED and SHARED, opt-in
+            // via diagnostics.enabled.
+            //
+            // Ordering (SHARDED): Task.runWithBeforeComplete(stats)
+            // records into WorkerStats BEFORE the in-flight permit is
+            // released, so by the time runPhase's drain returns every
+            // measurement task's diagnostics update has already
+            // happened.
+            //
+            // Ordering (SHARED): SharedExecutor's
+            // ThreadPoolExecutor.afterExecute() hook updates the
+            // single aggregate WorkerStats AFTER task.run() returns —
+            // which is AFTER the permit release in Task.run()'s
+            // finally. The diagnostics may therefore lag the drain by
+            // up to poolSize tasks; this is statistically negligible
+            // for correlation reports and acceptable for SHARED's
+            // "single aggregate" view.
+            //
+            // publishFinalCounts() flushes the volatile snapshot field
+            // amortised at 1 store per 1024 tasks; the trailing
+            // < 1024 tasks per worker need this explicit flush.
+            if (diagnostics != null) {
+                diagnostics.publishFinalCounts();
+                diagnostics.appendSummary(summary);
+            }
+
+            // Per-shard / per-window CSVs (SHARDED only). Best-effort:
+            // logged on failure but never fails the benchmark.
+            if (shardAnalyzer != null) {
+                try {
+                    if (measurement.retainedTasks() == null) {
+                        throw new IllegalStateException("shardLatencyCsv/rawTaskLogging requires retained tasks");
+                    }
+                    shardAnalyzer.analyzeAndWrite(
+                            runDir,
+                            measurement.retainedTasks(),
+                            global.workerCount(),
+                            measurement.submitStartNanos(),
+                            measurement.submitEndNanos(),
+                            diagCfg.shardWindowMillis(),
+                            diagCfg.shardLatencyCsv(),   // 3 aggregate CSVs
+                            diagCfg.rawTaskLogging(),    // per_task.csv
+                            global.shardedRouting(),
+                            pinning.enabled() ? pinning.coreMap() : null);
+                    if (diagCfg.shardLatencyCsv()) {
+                        System.out.printf("  shard CSVs       : %s, %s, %s%n",
+                                runDir.resolve("per_shard_latency.csv"),
+                                runDir.resolve("per_window_shard_latency.csv"),
+                                runDir.resolve("shard_window_correlation.csv"));
+                    }
+                    if (diagCfg.rawTaskLogging()) {
+                        System.out.printf("  per-task CSV     : %s%n",
+                                runDir.resolve("per_task.csv"));
+                    }
+                } catch (Exception e) {
+                    System.err.println("[diagnostics] ShardLatencyAnalyzer failed: " + e);
+                }
+            }
+
+            if (diagCfg.taskExecutionCsv()) {
+                System.out.printf("  task-exec CSV    : %s%n",
+                        runDir.resolve("task_execution_times.csv"));
+            }
+
+            Path summaryPath = runDir.resolve("summary_sharded.txt");
             Files.writeString(summaryPath, summary.toString());
 
             System.out.printf("  Measurement done : %,d tasks%n", measurement.submitted());
@@ -357,6 +611,7 @@ public class BenchmarkMain {
                     submittedPerSecond, completedPerSecond,
                     measurement.submitted(), submitSecs, drainSecs, shutdownSecs, totalSecs,
                     avgDepth, maxDepth,
+                    effectiveRetainCompletedTasks,
                     jfrOutput, perfOutput, asyncOutput);
 
             // 6. Diagnostic: per-shard queue distribution (sharded mode only).
@@ -368,20 +623,89 @@ public class BenchmarkMain {
             }
 
             // 7. DIAGNOSTIC: tail-latency / drain-accounting sanity check.
-            //    Pure observation — touches no executor, no queue, no
-            //    timing field. Helps identify whether a huge max latency
-            //    is a real workload tail or a measurement artifact
-            //    (e.g. uninitialized startNanos on a never-executed task,
-            //    or accounting drift between drain and recorded latency).
-            printTailDiagnostics(measurement, dispatcher, shardQueueAtSubmitEnd);
+            //    Same StringBuilder that was appended to summary_sharded.txt
+            //    above — single formatting source, so console and file
+            //    are byte-identical. Pure observation; touches no
+            //    executor, queue, or timing field.
+            System.out.print(tailDiag);
         } finally {
             try {
                 session.stop();
             } catch (Exception ignore) {
                 /* best-effort on failure path */
             } finally {
+                if (taskExecCsvWriter != null) {
+                    try {
+                        synchronized (taskExecCsvWriter) {
+                            taskExecCsvWriter.flush();
+                            taskExecCsvWriter.close();
+                        }
+                    } catch (IOException ignore) {
+                        /* best-effort */
+                    }
+                }
+
+                // 1. Stop accepting new tasks and 2. wait for in-flight
+                //    workers to finish so no thread is still calling
+                //    AttributionRecorder.record(...) when we flush.
                 dispatcher.shutdown();
-                dispatcher.awaitTermination(30, TimeUnit.SECONDS);
+                boolean terminated = dispatcher.awaitTermination(30, TimeUnit.SECONDS);
+
+                // 3. Detach the recorder (no further record() can succeed
+                //    against this run's recorder) BEFORE flushing.
+                // 4. Flush per-worker buffers to CSV — but only if the
+                //    dispatcher actually terminated. If it did not, some
+                //    worker may still be writing into its local buffer,
+                //    and flushing would race with concurrent writes.
+                if (attribution != null) {
+                    AttributionRecorder.setActive(null);
+                    if (!terminated) {
+                        System.err.println(
+                                "[attribution] WARNING: dispatcher did not terminate within 30s before "
+                                + "attribution flush; skipping attribution flush to avoid racing with "
+                                + "active worker writes.");
+                    } else {
+                        try {
+                            long recorded     = attribution.flushAndClose();
+                            long dropped      = attribution.droppedRecords();
+                            long missing      = attribution.missingBufferCount();
+                            long perfFailed   = attribution.perfReadFailed();
+                            long unmatched    = attribution.unmatchedPreSamples();
+                            System.out.printf(
+                                    "  attribution CSV  : %s  (%,d sampled, %,d dropped, %,d missingBuffer, 1-in-%d row, 1-in-%d perf)%n",
+                                    attribution.csvPath(),
+                                    recorded,
+                                    dropped,
+                                    missing,
+                                    attribution.sampleInterval(),
+                                    attribution.perfStride());
+                            if (perfFailed > 0 || unmatched > 0) {
+                                System.out.printf(
+                                        "  attribution perf : %,d rows had no usable counter data, %,d unmatched pre-samples%n",
+                                        perfFailed, unmatched);
+                            }
+                            if (dropped > 0) {
+                                System.err.printf(
+                                        "  *** WARNING: %,d sampled attribution record(s) were dropped "
+                                                + "because a per-worker buffer was full. "
+                                                + "Increase attribution.bufferCapacityPerWorker.%n",
+                                        dropped);
+                            }
+                            if (missing > 0) {
+                                System.err.printf(
+                                        "  *** WARNING: %,d sampled attribution record(s) were dropped "
+                                                + "because the calling worker thread had no registered "
+                                                + "buffer. This indicates instrumentation misconfiguration: "
+                                                + "some worker did not call "
+                                                + "AttributionRecorder.ensureBufferForCurrentThread(...) "
+                                                + "at startup. Treat the attribution result as suspect.%n",
+                                        missing);
+                            }
+                        } catch (IOException e) {
+                            System.err.println("[attribution] flush failed: " + e);
+                        }
+                    }
+                }
             }
         }
     }
@@ -465,6 +789,7 @@ public class BenchmarkMain {
                                          double totalSecs,
                                          double avgQueueDepth,
                                          int maxQueueDepth,
+                                         boolean effectiveRetainCompletedTasks,
                                          Path jfrOutput,
                                          Path perfOutput,
                                          Path asyncOutput) throws java.io.IOException {
@@ -477,6 +802,13 @@ public class BenchmarkMain {
         fields.put("warmupSeconds",        global.warmupSeconds());
         fields.put("measurementSeconds",   global.measurementSeconds());
         fields.put("taskCount",            global.taskCount());
+        fields.put("shardedRouting.mode",  global.shardedRouting().mode().name());
+        fields.put("shardedRouting.seed",  global.shardedRouting().routingSeed());
+        fields.put("workloadSeedMode",     global.workloadSeedMode().name());
+        fields.put("workloadSeed",         global.workloadSeed());
+        fields.put("blackholeMode",        global.blackholeMode().name());
+        fields.put("retainCompletedTasks", effectiveRetainCompletedTasks);
+        fields.put("retainCompletedTasks.configured", global.retainCompletedTasks());
         fields.put("submitted",            submitted);
         fields.put("submitDurationSeconds",     String.format("%.3f", submitSecs));
         // taskDrainDurationSeconds — workload completion AFTER profiler stop.
@@ -524,6 +856,205 @@ public class BenchmarkMain {
         System.out.printf("  Metadata file    : %s%n", meta);
     }
 
+    /**
+     * Online measurement aggregator used by runPhase() to avoid
+     * retaining every completed Task object by default.
+     */
+    private static final class OnlineMeasurementCollector implements Task.CompletionObserver {
+        private static final int CHUNK_BITS = 16;
+        private static final int CHUNK_SIZE = 1 << CHUNK_BITS;
+        private static final int CHUNK_MASK = CHUNK_SIZE - 1;
+        private static final int TOP_N = 10;
+
+        private final List<long[]> soChunks = new ArrayList<>();
+        private final List<long[]> qwChunks = new ArrayList<>();
+        private final List<long[]> exChunks = new ArrayList<>();
+        private final List<long[]> e2eChunks = new ArrayList<>();
+        private final List<byte[]> kindChunks = new ArrayList<>();
+        private final java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        private final Object topLock = new Object();
+        private final java.util.PriorityQueue<TailTaskSample> topN =
+                new java.util.PriorityQueue<>(TOP_N + 1,
+                        java.util.Comparator.comparingLong(TailTaskSample::endToEndNanos));
+
+        private final java.util.concurrent.atomic.LongAdder completedInSubmit = new java.util.concurrent.atomic.LongAdder();
+        private final java.util.concurrent.atomic.LongAdder completedInShutdown = new java.util.concurrent.atomic.LongAdder();
+        private final java.util.concurrent.atomic.LongAdder completedInDrain = new java.util.concurrent.atomic.LongAdder();
+        private final java.util.concurrent.atomic.LongAdder notStarted = new java.util.concurrent.atomic.LongAdder();
+        private final java.util.concurrent.atomic.LongAdder notFinished = new java.util.concurrent.atomic.LongAdder();
+        private final java.util.concurrent.atomic.LongAdder finishedAfterDrain = new java.util.concurrent.atomic.LongAdder();
+        private final java.util.concurrent.atomic.AtomicLong maxFinishNanos = new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
+
+        private volatile long submitEndNanos = Long.MAX_VALUE;
+        private volatile long shutdownEndNanos = Long.MAX_VALUE;
+        private volatile long drainEndNanos = Long.MAX_VALUE;
+        private final TaskExecutionCsvSink csvSink;
+
+        OnlineMeasurementCollector(int expectedTasks) {
+            this(expectedTasks, null);
+        }
+
+        OnlineMeasurementCollector(int expectedTasks, TaskExecutionCsvSink csvSink) {
+            int chunks = Math.max(1, (expectedTasks + CHUNK_SIZE - 1) >>> CHUNK_BITS);
+            for (int i = 0; i < chunks; i++) {
+                appendChunk();
+            }
+            this.csvSink = csvSink;
+        }
+
+        void setSubmitEndNanos(long ns) {
+            this.submitEndNanos = ns;
+        }
+
+        void setShutdownEndNanos(long ns) {
+            this.shutdownEndNanos = ns;
+        }
+
+        void setDrainEndNanos(long ns) {
+            this.drainEndNanos = ns;
+        }
+
+        @Override
+        public void onTaskCompleted(Task t) {
+            long s = t.startNanos();
+            long f = t.finishNanos();
+            if (s == 0L) {
+                notStarted.increment();
+                return;
+            }
+            if (f == 0L) {
+                notFinished.increment();
+                return;
+            }
+
+            if (f <= submitEndNanos) {
+                completedInSubmit.increment();
+            } else if (f <= shutdownEndNanos) {
+                completedInShutdown.increment();
+            } else {
+                completedInDrain.increment();
+            }
+            if (f > drainEndNanos) {
+                finishedAfterDrain.increment();
+            }
+            maxFinishNanos.accumulateAndGet(f, Math::max);
+
+            int idx = count.getAndIncrement();
+            ensureChunk(idx >>> CHUNK_BITS);
+            int c = idx >>> CHUNK_BITS;
+            int o = idx & CHUNK_MASK;
+            soChunks.get(c)[o] = t.submitOverheadNanos();
+            qwChunks.get(c)[o] = t.queueWaitTimeNanos();
+            exChunks.get(c)[o] = t.executionTimeNanos();
+            e2eChunks.get(c)[o] = t.endToEndLatencyNanos();
+            kindChunks.get(c)[o] = (byte) t.workloadKind().ordinal();
+
+            long e2e = t.endToEndLatencyNanos();
+            synchronized (topLock) {
+                if (topN.size() < TOP_N) {
+                    topN.add(sampleOf(t));
+                } else if (e2e > topN.peek().endToEndNanos()) {
+                    topN.poll();
+                    topN.add(sampleOf(t));
+                }
+            }
+
+            if (csvSink != null) {
+                writeCsvRow(t);
+            }
+        }
+
+        private void writeCsvRow(Task t) {
+            int shardId = csvSink.isShared
+                    ? -1
+                    : Hashing.shardOf(t.taskId(), csvSink.workerCount, csvSink.routing);
+            long qw = t.queueWaitTimeNanos();
+            long ex = t.executionTimeNanos();
+            long e2eN = t.endToEndLatencyNanos();
+            StringBuilder sb = new StringBuilder(64);
+            sb.append(t.workloadKind().name()).append(',')
+              .append(t.taskId()).append(',')
+              .append(shardId).append(',')
+              .append(qw).append(',')
+              .append(ex).append(',')
+              .append(e2eN).append('\n');
+            try {
+                synchronized (csvSink.writer) {
+                    csvSink.writer.write(sb.toString());
+                }
+            } catch (IOException ignore) {
+                // Diagnostics-only path — never fail the benchmark.
+            }
+        }
+
+        private TailTaskSample sampleOf(Task t) {
+            return new TailTaskSample(
+                    t.taskId(),
+                    t.workloadKind(),
+                    t.isMeasurement(),
+                    t.enqueuedNanos(),
+                    t.startNanos(),
+                    t.finishNanos(),
+                    t.queueWaitTimeNanos(),
+                    t.executionTimeNanos(),
+                    t.endToEndLatencyNanos());
+        }
+
+        private synchronized void ensureChunk(int chunkIndex) {
+            while (chunkIndex >= soChunks.size()) {
+                appendChunk();
+            }
+        }
+
+        private void appendChunk() {
+            soChunks.add(new long[CHUNK_SIZE]);
+            qwChunks.add(new long[CHUNK_SIZE]);
+            exChunks.add(new long[CHUNK_SIZE]);
+            e2eChunks.add(new long[CHUNK_SIZE]);
+            kindChunks.add(new byte[CHUNK_SIZE]);
+        }
+
+        PerKindLatencyRecorder buildRecorder() {
+            int n = count.get();
+            PerKindLatencyRecorder out = new PerKindLatencyRecorder(Math.max(n, 1));
+            WorkloadKind[] kinds = WorkloadKind.values();
+            for (int i = 0; i < n; i++) {
+                int c = i >>> CHUNK_BITS;
+                int o = i & CHUNK_MASK;
+                out.recordRaw(
+                        kinds[kindChunks.get(c)[o]],
+                        soChunks.get(c)[o],
+                        qwChunks.get(c)[o],
+                        exChunks.get(c)[o],
+                        e2eChunks.get(c)[o]);
+            }
+            return out;
+        }
+
+        TailSnapshot buildTailSnapshot() {
+            List<TailTaskSample> sortedTop;
+            synchronized (topLock) {
+                sortedTop = new ArrayList<>(topN);
+            }
+            sortedTop.sort((a, b) -> Long.compare(b.endToEndNanos(), a.endToEndNanos()));
+
+            long maxFinish = maxFinishNanos.get();
+            if (maxFinish == Long.MIN_VALUE) {
+                maxFinish = Long.MIN_VALUE;
+            }
+            return new TailSnapshot(
+                    completedInSubmit.intValue(),
+                    completedInShutdown.intValue(),
+                    completedInDrain.intValue(),
+                    notStarted.intValue(),
+                    notFinished.intValue(),
+                    finishedAfterDrain.intValue(),
+                    maxFinish,
+                    sortedTop);
+        }
+    }
+
     /* ================================================================
      *  Phase execution with bounded in-flight submission
      * ================================================================ */
@@ -533,9 +1064,11 @@ public class BenchmarkMain {
                                         int maxInflight,
                                         long durationNanos,
                                         boolean measurement,
+                                        boolean retainCompletedTasks,
                                         int taskLimit,
                                         long startTaskId,
-                                        Runnable onSubmitEnd) throws InterruptedException {
+                                        Runnable onSubmitEnd,
+                                        TaskExecutionCsvSink csvSink) throws InterruptedException {
         Semaphore permits = new Semaphore(maxInflight);
         Runnable releasePermit = permits::release;
 
@@ -547,12 +1080,18 @@ public class BenchmarkMain {
         long backpressureWaitNanos = 0L;
         long taskId = startTaskId;
 
-        // Only retain Task references for the measurement phase. Warmup
-        // tasks are dispatched and discarded — keeping them would bloat
-        // the heap and do nothing useful (they are excluded from latency
-        // analysis by the LatencyRecorder anyway).
-        int initialCapacity = !measurement ? 0 : (taskLimit > 0 ? taskLimit : 4096);
-        List<Task> tasks = new ArrayList<>(initialCapacity);
+        // Optional full task retention for heavy diagnostics. Default is
+        // non-retaining mode (online aggregation only).
+        int initialCapacity = (measurement && retainCompletedTasks)
+                ? (taskLimit > 0 ? taskLimit : 4096)
+                : 0;
+        List<Task> tasks = (measurement && retainCompletedTasks)
+                ? new ArrayList<>(initialCapacity)
+                : null;
+
+        OnlineMeasurementCollector collector = measurement
+                ? new OnlineMeasurementCollector(taskLimit > 0 ? taskLimit : 1024, csvSink)
+                : null;
 
         while ((taskLimit > 0 ? submitted < taskLimit : System.nanoTime() < deadline)) {
             if (!permits.tryAcquire()) {
@@ -562,9 +1101,12 @@ public class BenchmarkMain {
                 backpressureWaitNanos += System.nanoTime() - waitStart;
             }
 
-            Task task = generator.nextTask(taskId, measurement, releasePermit);
+            Task task = generator.nextTask(taskId,
+                    measurement,
+                    releasePermit,
+                    collector);
             dispatcher.submit(task);
-            if (measurement) {
+            if (tasks != null) {
                 tasks.add(task);
             }
 
@@ -573,6 +1115,9 @@ public class BenchmarkMain {
         }
 
         long submitEnd = System.nanoTime();
+        if (collector != null) {
+            collector.setSubmitEndNanos(submitEnd);
+        }
 
         // Fire the callback BEFORE the drain so callers can close their
         // observation windows (profiler anchors, queue-depth sampler)
@@ -590,6 +1135,9 @@ public class BenchmarkMain {
             onSubmitEnd.run();
         }
         long callbackEnd = System.nanoTime();
+        if (collector != null) {
+            collector.setShutdownEndNanos(callbackEnd);
+        }
 
         // Drain: wait for all in-flight tasks to release their permits.
         // This is bookkeeping only — no profiler / sampler observes it.
@@ -605,17 +1153,29 @@ public class BenchmarkMain {
         // during the (typically multi-second) shutdown window.
         long drainNanos  = allDoneEnd - callbackEnd;
         long totalNanos  = allDoneEnd - submitStart;
+        if (collector != null) {
+            collector.setDrainEndNanos(allDoneEnd);
+        }
 
-        return new PhaseResult(tasks, submitted, submitStart, submitEnd,
+        PerKindLatencyRecorder recorder = measurement
+                ? collector.buildRecorder()
+                : new PerKindLatencyRecorder(1);
+        TailSnapshot tail = measurement
+                ? collector.buildTailSnapshot()
+                : new TailSnapshot(0, 0, 0, 0, 0, 0, Long.MIN_VALUE, List.of());
+
+        return new PhaseResult(tasks, recorder, tail, submitted, submitStart, submitEnd,
                 submitNanos, shutdownNanos, drainNanos, totalNanos,
                 backpressure, backpressureWaitNanos, taskId);
     }
 
     private static Dispatcher createDispatcher(BenchmarkMode mode, int workerCount,
-                                                HybridConfig hybrid, PinningConfig pinning) {
+                                                HybridConfig hybrid, PinningConfig pinning,
+                                                ShardedRoutingConfig routing) {
         return switch (mode) {
             case SHARED  -> new SharedOnlyDispatcher(workerCount, pinning);
-            case SHARDED -> new ShardedOnlyDispatcher(workerCount, pinning);
+            case SHARDED -> new ShardedOnlyDispatcher(workerCount, pinning, null,
+                    routing == null ? ShardedRoutingConfig.defaults() : routing);
             case HYBRID  -> {
                 if (hybrid == null) {
                     throw new IllegalArgumentException(
@@ -664,87 +1224,56 @@ public class BenchmarkMain {
      * is introduced. This block runs after recorder.summary() has been
      * printed and is purely additive output.
      */
-    private static void printTailDiagnostics(PhaseResult measurement,
-                                             Dispatcher dispatcher,
-                                             int[] shardQueueAtSubmitEnd) {
-        List<Task> tasks = measurement.tasks();
+    /**
+     * Appends the tail / drain diagnostic block to {@code out}. Single
+     * formatting source so the section is byte-identical between
+     * stdout and {@code summary_sharded.txt}.
+     *
+     * <p>See class-level notes for what this block reveals; the body
+     * is purely additive observation (no field mutation, no timing).
+     */
+    private static void appendTailDiagnostics(StringBuilder out,
+                                              PhaseResult measurement,
+                                              Dispatcher dispatcher,
+                                              int[] shardQueueAtSubmitEnd) {
+        TailSnapshot tail = measurement.tail();
         long submitStart   = measurement.submitStartNanos();
         long submitEndNs   = measurement.submitEndNanos();
-
-        int completedInSubmit   = 0;
-        int completedInShutdown = 0;
-        int completedInDrain    = 0;
-        int notStarted          = 0; // startNanos == 0
-        int notFinished         = 0; // startNanos > 0 but finishNanos == 0
-        int finishedAfterDrain  = 0; // finishNanos > submitEnd + shutdown + drain (shouldn't happen)
-        long maxFinishNs        = Long.MIN_VALUE;
         long shutdownEndNs      = submitEndNs + measurement.shutdownNanos();
-        long submitPlusDrainNs  = submitEndNs + measurement.shutdownNanos() + measurement.drainNanos();
 
-        for (Task t : tasks) {
-            long s = t.startNanos();
-            long f = t.finishNanos();
-            if (s == 0L) {
-                notStarted++;
-                continue;
-            }
-            if (f == 0L) {
-                notFinished++;
-                continue;
-            }
-            if      (f <= submitEndNs)   completedInSubmit++;
-            else if (f <= shutdownEndNs) completedInShutdown++;
-            else                         completedInDrain++;
-            if (f > submitPlusDrainNs) finishedAfterDrain++;
-            if (f > maxFinishNs) maxFinishNs = f;
-        }
-
-        // Top-10 by end-to-end latency (ignore tasks with corrupted timing).
-        java.util.PriorityQueue<Task> top10 =
-                new java.util.PriorityQueue<>(11, java.util.Comparator.comparingLong(Task::endToEndLatencyNanos));
-        for (Task t : tasks) {
-            if (t.startNanos() == 0L || t.finishNanos() == 0L) continue;
-            if (top10.size() < 10) {
-                top10.add(t);
-            } else if (t.endToEndLatencyNanos() > top10.peek().endToEndLatencyNanos()) {
-                top10.poll();
-                top10.add(t);
-            }
-        }
-        List<Task> sortedTop = new ArrayList<>(top10);
-        sortedTop.sort((a, b) -> Long.compare(b.endToEndLatencyNanos(), a.endToEndLatencyNanos()));
-
-        System.out.println();
-        System.out.println("=== Tail / Drain Diagnostic ===");
-        System.out.printf("  measurementSubmitted               : %,d%n", measurement.submitted());
-        System.out.printf("  completedDuringSubmitWindow        : %,d%n", completedInSubmit);
-        System.out.printf("  completedDuringShutdownWindow      : %,d%n", completedInShutdown);
-        System.out.printf("  completedDuringTaskDrainWindow     : %,d%n", completedInDrain);
-        System.out.printf("  tasksWithStartNanos==0  (skipped)  : %,d%n", notStarted);
-        System.out.printf("  tasksWithFinishNanos==0 (skipped)  : %,d%n", notFinished);
-        System.out.printf("  finishedAfterReportedDrainEnd      : %,d%n", finishedAfterDrain);
-        long countedSum = completedInSubmit + completedInShutdown + completedInDrain + notStarted + notFinished;
+        out.append(System.lineSeparator());
+        out.append("=== Tail / Drain Diagnostic ===").append(System.lineSeparator());
+        out.append(String.format("  measurementSubmitted               : %,d%n", measurement.submitted()));
+        out.append(String.format("  completedDuringSubmitWindow        : %,d%n", tail.completedInSubmit()));
+        out.append(String.format("  completedDuringShutdownWindow      : %,d%n", tail.completedInShutdown()));
+        out.append(String.format("  completedDuringTaskDrainWindow     : %,d%n", tail.completedInDrain()));
+        out.append(String.format("  tasksWithStartNanos==0  (skipped)  : %,d%n", tail.notStarted()));
+        out.append(String.format("  tasksWithFinishNanos==0 (skipped)  : %,d%n", tail.notFinished()));
+        out.append(String.format("  finishedAfterReportedDrainEnd      : %,d%n", tail.finishedAfterDrain()));
+        long countedSum = tail.completedInSubmit() + tail.completedInShutdown() + tail.completedInDrain()
+                + tail.notStarted() + tail.notFinished();
         if (countedSum != measurement.submitted()) {
-            System.out.printf("  *** COUNT MISMATCH: classified=%d but submitted=%d (delta=%d)%n",
-                    countedSum, measurement.submitted(), countedSum - measurement.submitted());
+            out.append(String.format("  *** COUNT MISMATCH: classified=%d but submitted=%d (delta=%d)%n",
+                    countedSum, measurement.submitted(), countedSum - measurement.submitted()));
         }
         double submitDurMs   = (submitEndNs - submitStart) / 1_000_000.0;
         double shutdownDurMs = measurement.shutdownNanos() / 1_000_000.0;
         double drainDurMs    = measurement.drainNanos()    / 1_000_000.0;
-        double lastFinishRelMs = maxFinishNs == Long.MIN_VALUE
-                ? Double.NaN : (maxFinishNs - submitStart) / 1_000_000.0;
-        System.out.printf("  submitWindow                        : 0.000 ms .. %.3f ms%n", submitDurMs);
-        System.out.printf("  shutdownWindow  (session.stop)      : %.3f ms .. %.3f ms%n",
-                submitDurMs, submitDurMs + shutdownDurMs);
-        System.out.printf("  taskDrainWindow (workload finish)   : %.3f ms .. %.3f ms%n",
-                submitDurMs + shutdownDurMs, submitDurMs + shutdownDurMs + drainDurMs);
-        System.out.printf("  latestTaskFinishNanos (rel)         : %.3f ms%n", lastFinishRelMs);
+        double lastFinishRelMs = tail.maxFinishNanos() == Long.MIN_VALUE
+                ? Double.NaN : (tail.maxFinishNanos() - submitStart) / 1_000_000.0;
+        out.append(String.format("  submitWindow                        : 0.000 ms .. %.3f ms%n", submitDurMs));
+        out.append(String.format("  shutdownWindow  (session.stop)      : %.3f ms .. %.3f ms%n",
+                submitDurMs, submitDurMs + shutdownDurMs));
+        out.append(String.format("  taskDrainWindow (workload finish)   : %.3f ms .. %.3f ms%n",
+                submitDurMs + shutdownDurMs, submitDurMs + shutdownDurMs + drainDurMs));
+        out.append(String.format("  latestTaskFinishNanos (rel)         : %.3f ms%n", lastFinishRelMs));
 
-        System.out.println();
-        System.out.println("  Top-10 tasks by end-to-end latency:");
-        System.out.println("    rank taskId      kind   meas phase     enq(ms)   start(ms)  finish(ms)   queueWait(ms)   exec(ms)   endToEnd(ms)");
+        out.append(System.lineSeparator());
+        out.append("  Top-10 tasks by end-to-end latency:").append(System.lineSeparator());
+        out.append("    rank taskId      kind   meas phase     enq(ms)   start(ms)  finish(ms)   queueWait(ms)   exec(ms)   endToEnd(ms)")
+           .append(System.lineSeparator());
         int rank = 1;
-        for (Task t : sortedTop) {
+        for (TailTaskSample t : tail.topByEndToEnd()) {
             long enq = t.enqueuedNanos();
             long st  = t.startNanos();
             long fn  = t.finishNanos();
@@ -752,18 +1281,18 @@ public class BenchmarkMain {
             if      (fn <= submitEndNs)   phase = "submit";
             else if (fn <= shutdownEndNs) phase = "shutdwn";
             else                          phase = "drain";
-            System.out.printf("    %4d %-10d  %-6s %-4s %-7s %9.3f  %10.3f  %10.3f   %12.3f  %9.3f   %12.3f%n",
+            out.append(String.format("    %4d %-10d  %-6s %-4s %-7s %9.3f  %10.3f  %10.3f   %12.3f  %9.3f   %12.3f%n",
                     rank++,
                     t.taskId(),
-                    t.workloadKind().name(),
-                    t.isMeasurement() ? "Y" : "N",
+                    t.kind().name(),
+                    t.measurement() ? "Y" : "N",
                     phase,
                     (enq == 0L ? 0.0 : (enq - submitStart) / 1_000_000.0),
                     (st - submitStart) / 1_000_000.0,
                     (fn - submitStart) / 1_000_000.0,
-                    t.queueWaitTimeNanos() / 1_000_000.0,
-                    t.executionTimeNanos() / 1_000_000.0,
-                    t.endToEndLatencyNanos() / 1_000_000.0);
+                    t.queueWaitNanos() / 1_000_000.0,
+                    t.executionNanos() / 1_000_000.0,
+                    t.endToEndNanos() / 1_000_000.0));
         }
 
         // Per-shard pending queue depth at submitEnd / after drain, and
@@ -775,29 +1304,29 @@ public class BenchmarkMain {
             long[] allCounts  = sx.getProcessedCounts();
             int sumAtSubmitEnd = 0;
             int sumAfterDrain  = 0;
-            System.out.println();
-            System.out.println("  Per-shard pending queue size (at submitEnd / after drain) "
-                    + "+ measurement-completed count per worker:");
+            out.append(System.lineSeparator());
+            out.append("  Per-shard pending queue size (at submitEnd / after drain) "
+                    + "+ measurement-completed count per worker:").append(System.lineSeparator());
             for (int i = 0; i < n; i++) {
                 int qEnd  = shardQueueAtSubmitEnd != null ? shardQueueAtSubmitEnd[i] : -1;
                 int qPost = sx.getQueueSize(i);
                 sumAtSubmitEnd += (qEnd < 0 ? 0 : qEnd);
                 sumAfterDrain  += qPost;
-                System.out.printf("    shard[%2d]  submitEnd=%5s  postDrain=%5d   measCompleted=%,8d  allPhases=%,8d%n",
+                out.append(String.format("    shard[%2d]  submitEnd=%5s  postDrain=%5d   measCompleted=%,8d  allPhases=%,8d%n",
                         i,
                         qEnd < 0 ? "?" : String.valueOf(qEnd),
                         qPost,
                         measCounts[i],
-                        allCounts[i]);
+                        allCounts[i]));
             }
-            System.out.printf("    TOTAL      submitEnd=%5d  postDrain=%5d%n",
-                    sumAtSubmitEnd, sumAfterDrain);
+            out.append(String.format("    TOTAL      submitEnd=%5d  postDrain=%5d%n",
+                    sumAtSubmitEnd, sumAfterDrain));
             if (sumAfterDrain > 0) {
-                System.out.printf("    *** WARNING: %d task(s) still queued AFTER drain completed — "
-                        + "drain accounting and recorded latencies may be inconsistent.%n", sumAfterDrain);
+                out.append(String.format("    *** WARNING: %d task(s) still queued AFTER drain completed — "
+                        + "drain accounting and recorded latencies may be inconsistent.%n", sumAfterDrain));
             }
         }
-        System.out.println();
+        out.append(System.lineSeparator());
     }
 
     private static Path parseConfigPath(String[] args) {

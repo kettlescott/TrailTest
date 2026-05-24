@@ -31,6 +31,12 @@ public final class PerKindLatencyRecorder {
         byKind.get(task.workloadKind()).record(task);
     }
 
+    /** Records primitive samples for overall + per-kind buckets. */
+    public void recordRaw(WorkloadKind kind, long so, long qw, long ex, long e2e) {
+        overall.recordRaw(so, qw, ex, e2e);
+        byKind.get(kind).recordRaw(so, qw, ex, e2e);
+    }
+
     public int recordedTasks() { return overall.recordedTasks(); }
 
     public LatencyRecorder overall() { return overall; }

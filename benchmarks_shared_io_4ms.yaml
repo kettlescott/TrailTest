@@ -75,6 +75,16 @@ profiling:
     filename: "${runName}.async.jfr"
     extraArgs: []
 
+# Optional diagnostics — SHARED mode (single aggregate worker[0]).
+diagnostics:
+  enabled: true
+  perWorkerLatency: false
+  queueDepthByShard: true
+  windowSampling: true
+  windowCorrelation: true
+  windowSeconds: 1
+  slowExecutionMicros: 8000      # ≈ 2× targetMillis for IO park tasks
+
 runs:
   - name: shared_io_4ms
     mode: shared

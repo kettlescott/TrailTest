@@ -28,7 +28,7 @@ workloads:
   # value in benchmarks_sharded_mem_4ms.yaml for a clean shared-vs-sharded
   # A/B. Re-tune workflow:
   #   1) run once with `targetMillis: 4` (calibration mode; comment out memorySteps)
-  #   2) read `memorySteps=N (calibrated)` from summary.txt
+  #   2) read `memorySteps=N (calibrated)` from summary_sharded.txt
   #   3) paste N back here as memorySteps and remove targetMillis
   mem_4ms:
     - kind: MEMORY
@@ -95,6 +95,16 @@ profiling:
     format: jfr
     filename: "${runName}.async.jfr"
     extraArgs: []
+
+# Optional diagnostics — SHARED mode (single aggregate worker[0]).
+diagnostics:
+  enabled: true
+  perWorkerLatency: false
+  queueDepthByShard: true
+  windowSampling: true
+  windowCorrelation: true
+  windowSeconds: 1
+  slowExecutionMicros: 200
 
 runs:
   - name: shared_mem_4ms

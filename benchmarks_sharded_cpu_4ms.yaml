@@ -17,7 +17,7 @@ workloads:
   #   roughly 1.5–2 ns per iteration. 2_000_000 iters ≈ 3–4 ms wall.
   #   Re-tune if you need a different target:
   #     1) run once with `targetMillis: 4` (calibration mode)
-  #     2) read `cpuIterations[<entry>]=N (calibrated)` from summary.txt
+  #     2) read `cpuIterations[<entry>]=N (calibrated)` from summary_sharded.txt
   #     3) paste N back here as cpuIterations
   cpu_4ms:
     - { kind: CPU, cpuIterations: 2000000, ratio: 1.0 }
@@ -99,6 +99,57 @@ profiling:
 #     lscpu -p=CPU,CORE,SOCKET,NODE | grep -v '^#'
 # and confirm that {0..31} all have distinct CORE values within each
 # SOCKET. If not, regenerate the coreMap by picking one CPU per CORE.
+
+# Optional per-worker / per-shard diagnostics (SHARDED mode only).
+# All flags default to false / off; the entire block can be omitted with
+# zero effect on benchmark behavior. Use this to investigate tail
+# latency / queue imbalance on CPU-bound or pinned runs.
+#
+#   perWorkerLatency    : HEAVY — adds one LatencyRecorder per worker.
+#                         Each recorder keeps four long[] buffers
+#                         (submitOverhead + queueWait + execution +
+#                         endToEnd). Cost ≈ tasks × 4 × 8 bytes. Enable
+#                         only on diagnostic runs with a bounded
+#                         taskCount; leave off for headline experiments.
+#   queueDepthByShard   : cheap; aggregates per-shard queue depth across
+#                         windows.
+#   windowSampling      : cheap; compact per-window summaries
+#                         (completedPerWorker min/mean/max/maxOverMin +
+#                         maxShardQueueDepth + queueDepthImbalance).
+#   slowExecutionMicros : static threshold for slow-burst counters.
+#                         A task is "slow" if execution exceeds this.
+#                         200µs is reasonable for 4ms targets; raise if
+#                         the workload itself is slower on average.
+diagnostics:
+  enabled: true
+  perWorkerLatency: false        # HEAVY: enable only for bounded diagnostic runs
+  queueDepthByShard: true
+  windowSampling: true
+  windowCorrelation: true
+  windowSeconds: 1
+  slowExecutionMicros: 200
+  # Per-shard / per-window CSV export (SHARDED only). Writes 3 files to
+  # results/<runName>/:
+  #   per_shard_latency.csv         — one row per shard (percentiles + depth).
+  #   per_window_shard_latency.csv  — one row per (window, shard); window
+  #                                   size = shardWindowMillis (default 100).
+  #                                   Columns: completedTasks, enqueuedTasks,
+  #                                   throughputTasksPerSec, backlogDelta,
+  #                                   exec/qwait/e2e avg+p95+p99, avg/max depth.
+  #   shard_window_correlation.csv  — one row per shard; 6 Pearson r values:
+  #                                     execP95_t  vs depth_t            (coincident)
+  #                                     execP95_t  vs depth_{t+1}        (exec leads backlog)
+  #                                     execP99_t  vs qwP99_{t+1}        (exec leads observed qwait)
+  #                                     execP95_t  vs throughput_t       (slower exec → lower throughput)
+  #                                     execP95_t  vs backlogDelta_t     (slower exec → backlog growth)
+  #                                     backlogDelta_t vs depth_{t+1}    (backlog leads next-window depth)
+  shardLatencyCsv: true
+  shardWindowMillis: 100
+  # Optional per-task CSV (HEAVY — diagnostic runs only). When true,
+  # writes results/<runName>/per_task.csv with one row per measurement
+  # task. File size scales linearly with task count. OFF by default.
+  rawTaskLogging: false
+
 runs:
   - name: sharded_cpu_4ms
     mode: sharded

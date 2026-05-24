@@ -138,10 +138,19 @@ public final class TaskGenerator {
     private final long seed;
     private final EntryState[] states;
     private final double[] cumulative; // normalized cdf, length == states.length
+    private final WorkloadSeedMode seedMode;
+    private final long workloadSeed;
 
     public TaskGenerator(WorkloadConfig workload, long seed) {
+        this(workload, seed, WorkloadSeedMode.SEQUENTIAL_TASK_ID, 0L);
+    }
+
+    public TaskGenerator(WorkloadConfig workload, long seed,
+                         WorkloadSeedMode seedMode, long workloadSeed) {
         this.workload = workload;
         this.seed = seed;
+        this.seedMode = seedMode == null ? WorkloadSeedMode.SEQUENTIAL_TASK_ID : seedMode;
+        this.workloadSeed = workloadSeed;
 
         List<WorkloadEntry> entries = workload.entries();
         this.states = new EntryState[entries.size()];
@@ -165,7 +174,16 @@ public final class TaskGenerator {
 
 
     public Task nextTask(long taskId, boolean measurement, Runnable onComplete) {
-        long taskSeed = seed + taskId;
+        return nextTask(taskId, measurement, onComplete, null);
+    }
+
+    public Task nextTask(long taskId,
+                         boolean measurement,
+                         Runnable onComplete,
+                         Task.CompletionObserver completionObserver) {
+        long taskSeed = (seedMode == WorkloadSeedMode.MIXED_TASK_ID)
+                ? (seed ^ Hashing.mix64(taskId ^ workloadSeed))
+                : (seed + taskId);
         EntryState es = selectEntry(taskId);
         Workload w = createWorkload(es, taskSeed);
         long createdNanos = System.nanoTime();
@@ -175,7 +193,8 @@ public final class TaskGenerator {
                 createdNanos,
                 measurement,
                 w,
-                onComplete);
+                onComplete,
+                completionObserver);
     }
 
     private Workload createWorkload(EntryState es, long taskSeed) {

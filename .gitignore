@@ -46,3 +46,11 @@ sharded_tiny/
 shared_tiny/
 src.zip
 group_diff.txt
+
+benchmarks_sharded_mem_artifact_A.yaml
+benchmarks_sharded_mem_artifact_B.yaml
+benchmarks_sharded_mem_artifact_C.yaml
+benchmarks_sharded_mem_artifact_D.yaml
+task_attribution_cpu.csv
+task_attribution_memory.csv
+

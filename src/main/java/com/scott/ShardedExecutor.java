@@ -111,6 +111,9 @@ public final class ShardedExecutor implements BenchmarkExecutor {
     /** Core assignments (one per worker).  {@code null} when pinning is disabled. */
     private final int[] coreMap;
 
+    /** Routing policy (legacy {@code MODULO} by default). */
+    private final ShardedRoutingConfig routing;
+
     // ---- task tracking (DEBUG-only) ----
     // When BenchmarkFlags.DEBUG is true, every submitted Task reference is
     // recorded for diagnostic use via getTasks().  When false (default), the
@@ -137,40 +140,39 @@ public final class ShardedExecutor implements BenchmarkExecutor {
      * @param workerCount number of worker threads (one queue per worker)
      */
     public ShardedExecutor(int workerCount) {
-        this(workerCount, false, null);
+        this(workerCount, false, null, null, ShardedRoutingConfig.defaults());
     }
 
     /**
      * Creates a sharded executor with optional per-worker CPU core pinning.
      *
-     * <p>When {@code enablePinning} is {@code true}, each worker thread
-     * will call {@link CpuAffinity#pinCurrentThreadToCore(int)} with the
-     * core ID from {@code coreMap[workerIndex % coreMap.length]} at the
-     * start of its {@code run()} method.  The pinning is <em>per-thread</em>,
-     * not per-process — only the worker thread is affected.  If pinning
-     * fails for an individual worker, a warning is logged and that
-     * worker continues unpinned; the benchmark is never aborted.
-     *
-     * <p>When {@code enablePinning} is {@code false}, {@code coreMap} is
-     * ignored and workers run with the default OS scheduling (identical to
-     * the single-argument constructor).
-     *
      * <p>{@code coreMap} may be shorter than {@code workerCount}; workers
      * are assigned cores in round-robin order over the map.
-     *
-     * @param workerCount   number of worker threads (one queue per worker)
-     * @param enablePinning whether to pin worker threads to CPU cores
-     * @param coreMap       array of logical CPU core IDs; assigned to
-     *                      workers round-robin
-     *                      ({@code coreMap[i % coreMap.length]}).  Must
-     *                      be non-null and non-empty when
-     *                      {@code enablePinning} is {@code true};
-     *                      may be {@code null} when pinning is disabled
-     * @throws IllegalArgumentException if pinning is enabled but
-     *         {@code coreMap} is {@code null} or empty
+     */
+    public ShardedExecutor(int workerCount, boolean enablePinning, int[] coreMap) {
+        this(workerCount, enablePinning, coreMap, null, ShardedRoutingConfig.defaults());
+    }
+
+    /**
+     * Full constructor. {@code workerStats} may be null when diagnostics
+     * are disabled (default). When non-null, the array length must equal
+     * {@code workerCount} — entry {@code [i]} is forwarded to worker
+     * {@code i} and updated by that worker on the hot path.
+     */
+    public ShardedExecutor(int workerCount, boolean enablePinning, int[] coreMap, WorkerStats[] workerStats) {
+        this(workerCount, enablePinning, coreMap, workerStats, ShardedRoutingConfig.defaults());
+    }
+
+    /**
+     * Routing-aware constructor. {@code routing} controls how {@code taskId}
+     * is mapped to a shard at submit time (see {@link ShardedRoutingConfig}).
      */
     @SuppressWarnings("unchecked")
-    public ShardedExecutor(int workerCount, boolean enablePinning, int[] coreMap) {
+    public ShardedExecutor(int workerCount,
+                           boolean enablePinning,
+                           int[] coreMap,
+                           WorkerStats[] workerStats,
+                           ShardedRoutingConfig routing) {
         if (enablePinning) {
             if (!CpuAffinity.isSupported()) {
                 throw new IllegalStateException(
@@ -194,18 +196,27 @@ public final class ShardedExecutor implements BenchmarkExecutor {
 
         this.workerCount    = workerCount;
         this.pinningEnabled = enablePinning;
+        this.routing        = routing == null ? ShardedRoutingConfig.defaults() : routing;
         this.queues         = new LinkedBlockingQueue[workerCount];
         this.workerThreads  = new Thread[workerCount];
         this.workers        = new ShardedWorker[workerCount];
         this.taskList       = BenchmarkFlags.DEBUG ? new ArrayList<>() : null;
 
+        if (workerStats != null && workerStats.length != workerCount) {
+            throw new IllegalArgumentException(
+                    "workerStats.length (" + workerStats.length
+                            + ") must equal workerCount (" + workerCount + ")");
+        }
+
         for (int i = 0; i < workerCount; i++) {
             queues[i] = new LinkedBlockingQueue<>();
 
-            // Build a ShardedWorker with the appropriate pinning config.
-            ShardedWorker worker = enablePinning
-                    ? new ShardedWorker(i, queues[i], shutdown, true, this.coreMap[i])
-                    : new ShardedWorker(i, queues[i], shutdown);
+            WorkerStats statsForWorker = workerStats == null ? null : workerStats[i];
+            ShardedWorker worker = new ShardedWorker(
+                    i, queues[i], shutdown,
+                    enablePinning,
+                    enablePinning ? this.coreMap[i] : -1,
+                    statsForWorker);
 
             workers[i]       = worker;
             workerThreads[i] = new Thread(worker, "ShardedWorker-" + i);
@@ -247,7 +258,7 @@ public final class ShardedExecutor implements BenchmarkExecutor {
         if (task.isMeasurement()) {
             measurementSubmitCount++;
         }
-        int shard = Math.floorMod(Long.hashCode(task.taskId()), workerCount);
+        int shard = Hashing.shardOf(task.taskId(), workerCount, routing);
         queues[shard].offer(task);
     }
 
@@ -321,6 +332,11 @@ public final class ShardedExecutor implements BenchmarkExecutor {
     /** Returns whether CPU pinning was enabled for this executor instance. */
     public boolean isPinningEnabled() {
         return pinningEnabled;
+    }
+
+    /** Returns the active routing policy (never null). */
+    public ShardedRoutingConfig routing() {
+        return routing;
     }
 
     /**

@@ -54,6 +54,13 @@ final class ShardedWorker implements Runnable {
     private final int coreId;    // meaningful only when enablePinning == true
 
     /**
+     * Optional per-worker diagnostics sink. Null when diagnostics are
+     * disabled (default) — hot-path stays allocation-free and the JIT
+     * eliminates the {@code stats != null} branch.
+     */
+    private final WorkerStats stats;
+
+    /**
      * Number of tasks this worker has executed.  Only written by the
      * owning worker thread and read after the thread has terminated,
      * so no synchronization is needed (plain {@code long} is fine).
@@ -86,7 +93,7 @@ final class ShardedWorker implements Runnable {
     ShardedWorker(int workerId,
                   LinkedBlockingQueue<Task> localQueue,
                   AtomicBoolean shutdown) {
-        this(workerId, localQueue, shutdown, false, -1);
+        this(workerId, localQueue, shutdown, false, -1, null);
     }
 
     /**
@@ -105,11 +112,22 @@ final class ShardedWorker implements Runnable {
                   AtomicBoolean shutdown,
                   boolean enablePinning,
                   int coreId) {
+        this(workerId, localQueue, shutdown, enablePinning, coreId, null);
+    }
+
+    /** Full constructor; {@code stats} may be null when diagnostics disabled. */
+    ShardedWorker(int workerId,
+                  LinkedBlockingQueue<Task> localQueue,
+                  AtomicBoolean shutdown,
+                  boolean enablePinning,
+                  int coreId,
+                  WorkerStats stats) {
         this.workerId      = workerId;
         this.localQueue    = localQueue;
         this.shutdown      = shutdown;
         this.enablePinning = enablePinning;
         this.coreId        = coreId;
+        this.stats         = stats;
     }
 
     @Override
@@ -145,32 +163,62 @@ final class ShardedWorker implements Runnable {
             }
         }
 
-        // ---- main task loop (identical to the non-pinned version) ----
-        while (true) {
-            // Fast exit: shutdown requested and nothing left to drain.
-            if (shutdown.get() && localQueue.isEmpty()) {
-                return;
-            }
+        // ---- Optional per-task attribution buffer registration ----
+        // One-shot, idempotent. When attribution is disabled (default)
+        // the static volatile read returns null and this is a no-op.
+        // Registering here — before the main task loop — guarantees the
+        // sampled hot path in Task.run() never has to allocate a buffer.
+        final AttributionRecorder _attrib = AttributionRecorder.active();
+        if (_attrib != null) {
+            // SHARDED worker: shardId == workerId by construction.
+            _attrib.ensureBufferForCurrentThread(workerId, workerId);
+        }
 
-            final Task task;
-            try {
-                task = localQueue.take();
-            } catch (InterruptedException e) {
-                // Woken by interrupt — re-check shutdown + drain condition.
+        // ---- main task loop wrapped in try/finally so perf fds are
+        //      ALWAYS released, even on abnormal exit (uncaught
+        //      throwable, interrupt during shutdown, etc.). The
+        //      sampled rows already in the per-worker buffer remain
+        //      intact for flushAndClose() to drain. ----
+        try {
+            while (true) {
+                // Fast exit: shutdown requested and nothing left to drain.
                 if (shutdown.get() && localQueue.isEmpty()) {
                     return;
                 }
-                // Still have queued work or not yet shutting down — keep going.
-                continue;
-            }
 
-            // Task.run() records start/finish timestamps, executes the
-            // workload, and counts down the batch latch — identical to
-            // the SharedExecutor code path via ThreadPoolExecutor.
-            task.run();
-            processedCount++;
-            if (task.isMeasurement()) {
-                measurementProcessedCount++;
+                final Task task;
+                try {
+                    task = localQueue.take();
+                } catch (InterruptedException e) {
+                    // Woken by interrupt — re-check shutdown + drain condition.
+                    if (shutdown.get() && localQueue.isEmpty()) {
+                        return;
+                    }
+                    // Still have queued work or not yet shutting down — keep going.
+                    continue;
+                }
+
+                // Task.run() records start/finish timestamps, executes the
+                // workload, and counts down the batch latch — identical to
+                // the SharedExecutor code path via ThreadPoolExecutor.
+                //
+                // When diagnostics are enabled, route through the variant
+                // that records into WorkerStats BEFORE onComplete fires the
+                // permit release. This eliminates the diagnostics/drain
+                // race without any extra synchronisation.
+                if (stats != null) {
+                    task.runWithBeforeComplete(stats);
+                } else {
+                    task.run();
+                }
+                processedCount++;
+                if (task.isMeasurement()) {
+                    measurementProcessedCount++;
+                }
+            }
+        } finally {
+            if (_attrib != null) {
+                _attrib.closePerfFdsForCurrentThread();
             }
         }
     }
