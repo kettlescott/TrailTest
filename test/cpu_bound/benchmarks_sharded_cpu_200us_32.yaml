@@ -1,0 +1,144 @@
+global:
+  workerCount: 32
+  maxInflight: 32
+  seed: 3735928559
+  warmupSeconds: 10
+  measurementSeconds: 60
+  taskCount: 0
+
+workloads:
+  # Fixed CPU iteration count — bypasses runtime calibration so every
+  # run (shared / sharded-unpinned / sharded-pinned) executes EXACTLY
+  # the same arithmetic per task. Removes calibration variance as a
+  # confounding variable from the pinning A/B.
+  #
+  # Value sizing on Xeon Gold 6242 @ 2.8 GHz:
+  #   CpuBoundWorkload's loop body is ~4 simple ALU ops with high ILP,
+  #   roughly 1.5–2 ns per iteration. 2_000_000 iters ≈ 3–4 ms wall.
+  #   Re-tune if you need a different target:
+  #     1) run once with `targetMillis: 4` (calibration mode)
+  #     2) read `cpuIterations[<entry>]=N (calibrated)` from summary.txt
+  #     3) paste N back here as cpuIterations
+  cpu_4ms:
+    - { kind: CPU, cpuIterations: 62000, ratio: 1.0 }
+
+profiling:
+  enabled: true
+  control: api
+  settings: profile
+  captureLocks: true        # lower threshold to 0ms for JavaMonitorEnter/Wait/Inflate + ThreadPark
+  lockEventThreshold: 10us # threshold applied when captureLocks=true. Accepts ns/us/ms/s. Use 0ms to capture everything.
+  start: beforeMeasurement
+  stop: afterMeasurement
+  filename: "${runName}.jfr"
+  startCommand: "JFR.start name=${runName} settings=${settings} filename=${outputFile}"
+  stopCommand: "JFR.stop name=${runName} filename=${outputFile}"
+
+  perf:
+    enabled: true
+    binary: perf
+    frequency: 99
+    clock: monotonic
+    callGraph: dwarf
+    mmapPages: 2048
+    extraArgs:
+      - "--no-buildid"
+      - "--no-buildid-cache"
+      - "-z"
+      - "-e"
+      - "cycles,instructions,cache-references,cache-misses,LLC-loads,LLC-load-misses"
+      - "-e"
+      - "context-switches,cpu-migrations"
+    filename: "${runName}.perf.data"
+  
+    enablePerfStat: true
+    perfStatFilename: "${runName}.perf.stat.txt"
+    perfStatEvents:
+      - cycles
+      - instructions
+      - branches
+      - branch-misses
+      - cache-references
+      - cache-misses
+      - LLC-loads
+      - LLC-load-misses
+      - context-switches
+      - cpu-migrations
+      - page-faults
+      - task-clock    
+
+  asyncProfiler:
+    enabled: true
+    binary: /home/wangs100/test/async-profiler-4.0-linux-x64/bin/asprof
+    event: wall
+    interval: 1ms
+    format: jfr
+    filename: "${runName}.async.jfr"
+    extraArgs: []
+
+diagnostics:
+  enabled: true
+  perWorkerLatency: false        # HEAVY: enable only for bounded diagnostic runs
+  queueDepthByShard: true
+  windowSampling: true
+  windowCorrelation: true   
+  windowSeconds: 1
+  slowExecutionMicros: 200
+  taskExecutionCsv: true  
+
+attribution:
+  enabled: true                # master switch; false ⇒ recorder bypassed
+  sampleRate: 0.01             # of measurement tasks, write a CSV row for 1/100
+  outputCsv: ""                # blank ⇒ results/<runName>/task_attribution.csv
+  bufferCapacityPerWorker: 65536  # rows per worker before drop-and-count
+
+  perfEnabled: true            # open perf_event_open(2) counters per worker
+  sampledPerfRate: 1.0         # of sampled rows, how many actually read counters
+                               #   1.0  = every sampled row (default)
+                               #   0.1  = 1 in 10 sampled rows → bracketed
+                               #   0.0  = never (rows have perfAvailable=false)
+  perfCounters:                # which counters to open per worker thread
+    - cycles                   # omit / leave empty → default minimal set:
+    - instructions             #   cycles, instructions,
+    - LLC-loads                #   LLC-loads, LLC-load-misses,
+    - LLC-load-misses          #   context-switches, cpu-migrations
+    - context-switches
+    - cpu-migrations
+
+# Two runs: unpinned baseline + pinned A/B counterpart.
+# Host: 2× Xeon Gold 6242 — 64 logical CPUs, 32 physical cores, 2 NUMA nodes
+#   NUMA node0 (socket 0): even CPUs  0,2,...,62  (16 phys cores × 2 SMT)
+#   NUMA node1 (socket 1): odd  CPUs  1,3,...,63  (16 phys cores × 2 SMT)
+#
+# workerCount=32 = total physical cores. For pure CPU-bound work this is
+# the optimal point: every worker gets a dedicated execution unit, no SMT
+# sibling contention, no idle hardware.
+#
+# coreMap below uses CPUs 0..31 — the first 32 logical CPUs, which on
+# Linux's interleaved numbering on this box maps to one SMT sibling per
+# physical core across both sockets (16 from node0, 16 from node1).
+# To VERIFY the SMT-sibling layout on this exact host run:
+#     lscpu -p=CPU,CORE,SOCKET,NODE | grep -v '^#'
+# and confirm that {0..31} all have distinct CORE values within each
+# SOCKET. If not, regenerate the coreMap by picking one CPU per CORE.
+runs:
+  - name: sharded_cpu_200us_32
+    mode: sharded
+    workload: cpu_4ms
+    enabled: true        # set to true to include this run; false skips it
+    pinning:
+      enabled: false
+
+  - name: sharded_cpu_4ms_pinned
+    mode: sharded
+    workload: cpu_4ms
+    enabled: false
+    pinning:
+      enabled: true
+      coreMap: [
+         0,  1,  2,  3,  4,  5,  6,  7,
+         8,  9, 10, 11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20, 21, 22, 23,
+        24, 25, 26, 27, 28, 29, 30, 31
+      ]
+
