@@ -2,8 +2,6 @@ package com.scott;
 
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Worker thread for {@link ShardedExecutor}.
@@ -56,6 +54,13 @@ final class ShardedWorker implements Runnable {
     private final int coreId;    // meaningful only when enablePinning == true
 
     /**
+     * Optional per-worker diagnostics sink. Null when diagnostics are
+     * disabled (default) — hot-path stays allocation-free and the JIT
+     * eliminates the {@code stats != null} branch.
+     */
+    private final WorkerStats stats;
+
+    /**
      * Number of tasks this worker has executed.  Only written by the
      * owning worker thread and read after the thread has terminated,
      * so no synchronization is needed (plain {@code long} is fine).
@@ -81,15 +86,6 @@ final class ShardedWorker implements Runnable {
      */
     private String pinningError;
 
-    /* ---- startup handshake (set once before Thread.start()) ---- */
-
-    /** Counted down exactly once after the pinning attempt completes
-     *  (success or failure).  May be {@code null} when no handshake is in use. */
-    private CountDownLatch startupLatch;
-
-    /** Receives the first startup failure cause across all workers.
-     *  May be {@code null} when no handshake is in use. */
-    private AtomicReference<Throwable> startupFailure;
 
     /**
      * Creates a worker <em>without</em> CPU pinning (original behaviour).
@@ -97,7 +93,7 @@ final class ShardedWorker implements Runnable {
     ShardedWorker(int workerId,
                   LinkedBlockingQueue<Task> localQueue,
                   AtomicBoolean shutdown) {
-        this(workerId, localQueue, shutdown, false, -1);
+        this(workerId, localQueue, shutdown, false, -1, null);
     }
 
     /**
@@ -116,11 +112,22 @@ final class ShardedWorker implements Runnable {
                   AtomicBoolean shutdown,
                   boolean enablePinning,
                   int coreId) {
+        this(workerId, localQueue, shutdown, enablePinning, coreId, null);
+    }
+
+    /** Full constructor; {@code stats} may be null when diagnostics disabled. */
+    ShardedWorker(int workerId,
+                  LinkedBlockingQueue<Task> localQueue,
+                  AtomicBoolean shutdown,
+                  boolean enablePinning,
+                  int coreId,
+                  WorkerStats stats) {
         this.workerId      = workerId;
         this.localQueue    = localQueue;
         this.shutdown      = shutdown;
         this.enablePinning = enablePinning;
         this.coreId        = coreId;
+        this.stats         = stats;
     }
 
     @Override
@@ -147,55 +154,71 @@ final class ShardedWorker implements Runnable {
                             CpuAffinity.getCurrentAffinityMask());
                 }
             } catch (Throwable e) {
+                // Pinning failure is non-fatal: log a warning and run
+                // the worker with the JVM's default affinity mask.
                 pinned = false;
                 pinningError = e.getMessage();
-                IllegalStateException wrapped = new IllegalStateException(
-                        "Worker " + workerId + " failed to pin to core " + coreId, e);
-                if (startupFailure != null) {
-                    // Record the FIRST failure across all workers; others are dropped.
-                    startupFailure.compareAndSet(null, wrapped);
-                }
-                if (startupLatch != null) {
-                    startupLatch.countDown();
-                }
-                // Exit cleanly — the constructor on the main thread will
-                // observe startupFailure and propagate the exception.
-                return;
+                System.err.printf("[ShardedWorker-%d] WARN: failed to pin to core %d: %s%n",
+                        workerId, coreId, e.getMessage());
             }
         }
-        // Always count down — even when pinning is disabled — so the
-        // executor constructor's await() unblocks once every worker has
-        // reached steady state.
-        if (startupLatch != null) {
-            startupLatch.countDown();
+
+        // ---- Optional per-task attribution buffer registration ----
+        // One-shot, idempotent. When attribution is disabled (default)
+        // the static volatile read returns null and this is a no-op.
+        // Registering here — before the main task loop — guarantees the
+        // sampled hot path in Task.run() never has to allocate a buffer.
+        final AttributionRecorder _attrib = AttributionRecorder.active();
+        if (_attrib != null) {
+            // SHARDED worker: shardId == workerId by construction.
+            _attrib.ensureBufferForCurrentThread(workerId, workerId);
         }
 
-        // ---- main task loop (identical to the non-pinned version) ----
-        while (true) {
-            // Fast exit: shutdown requested and nothing left to drain.
-            if (shutdown.get() && localQueue.isEmpty()) {
-                return;
-            }
-
-            final Task task;
-            try {
-                task = localQueue.take();
-            } catch (InterruptedException e) {
-                // Woken by interrupt — re-check shutdown + drain condition.
+        // ---- main task loop wrapped in try/finally so perf fds are
+        //      ALWAYS released, even on abnormal exit (uncaught
+        //      throwable, interrupt during shutdown, etc.). The
+        //      sampled rows already in the per-worker buffer remain
+        //      intact for flushAndClose() to drain. ----
+        try {
+            while (true) {
+                // Fast exit: shutdown requested and nothing left to drain.
                 if (shutdown.get() && localQueue.isEmpty()) {
                     return;
                 }
-                // Still have queued work or not yet shutting down — keep going.
-                continue;
-            }
 
-            // Task.run() records start/finish timestamps, executes the
-            // workload, and counts down the batch latch — identical to
-            // the SharedExecutor code path via ThreadPoolExecutor.
-            task.run();
-            processedCount++;
-            if (task.isMeasurement()) {
-                measurementProcessedCount++;
+                final Task task;
+                try {
+                    task = localQueue.take();
+                } catch (InterruptedException e) {
+                    // Woken by interrupt — re-check shutdown + drain condition.
+                    if (shutdown.get() && localQueue.isEmpty()) {
+                        return;
+                    }
+                    // Still have queued work or not yet shutting down — keep going.
+                    continue;
+                }
+
+                // Task.run() records start/finish timestamps, executes the
+                // workload, and counts down the batch latch — identical to
+                // the SharedExecutor code path via ThreadPoolExecutor.
+                //
+                // When diagnostics are enabled, route through the variant
+                // that records into WorkerStats BEFORE onComplete fires the
+                // permit release. This eliminates the diagnostics/drain
+                // race without any extra synchronisation.
+                if (stats != null) {
+                    task.runWithBeforeComplete(stats);
+                } else {
+                    task.run();
+                }
+                processedCount++;
+                if (task.isMeasurement()) {
+                    measurementProcessedCount++;
+                }
+            }
+        } finally {
+            if (_attrib != null) {
+                _attrib.closePerfFdsForCurrentThread();
             }
         }
     }
@@ -231,18 +254,5 @@ final class ShardedWorker implements Runnable {
     /** Returns the pinning error message, or {@code null} if not attempted or succeeded. */
     String pinningError() {
         return pinningError;
-    }
-
-    /**
-     * Wires the startup handshake.  Must be called <em>before</em>
-     * {@code Thread.start()} on the worker.  After the worker's pinning
-     * attempt completes (success or failure), it counts down
-     * {@code latch} exactly once.  On failure, it also publishes the
-     * cause into {@code failureRef} and exits without entering the task
-     * loop.  Either argument may be {@code null} to disable the handshake.
-     */
-    void setStartupHandshake(CountDownLatch latch, AtomicReference<Throwable> failureRef) {
-        this.startupLatch   = latch;
-        this.startupFailure = failureRef;
     }
 }

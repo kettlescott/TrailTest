@@ -5,9 +5,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Sharded Executor — per-worker queue implementation with optional CPU
@@ -113,6 +111,9 @@ public final class ShardedExecutor implements BenchmarkExecutor {
     /** Core assignments (one per worker).  {@code null} when pinning is disabled. */
     private final int[] coreMap;
 
+    /** Routing policy (legacy {@code MODULO} by default). */
+    private final ShardedRoutingConfig routing;
+
     // ---- task tracking (DEBUG-only) ----
     // When BenchmarkFlags.DEBUG is true, every submitted Task reference is
     // recorded for diagnostic use via getTasks().  When false (default), the
@@ -139,119 +140,94 @@ public final class ShardedExecutor implements BenchmarkExecutor {
      * @param workerCount number of worker threads (one queue per worker)
      */
     public ShardedExecutor(int workerCount) {
-        this(workerCount, false, null);
+        this(workerCount, false, null, null, ShardedRoutingConfig.defaults());
     }
 
     /**
      * Creates a sharded executor with optional per-worker CPU core pinning.
      *
-     * <p>When {@code enablePinning} is {@code true}, each worker thread
-     * will call {@link CpuAffinity#pinCurrentThreadToCore(int)} with the
-     * core ID from {@code coreMap[workerIndex]} at the start of its
-     * {@code run()} method.  The pinning is <em>per-thread</em>, not
-     * per-process — only the worker thread is affected.
-     *
-     * <p>When {@code enablePinning} is {@code false}, {@code coreMap} is
-     * ignored and workers run with the default OS scheduling (identical to
-     * the single-argument constructor).
-     *
-     * <p>All other semantics (queue topology, task routing, shutdown
-     * protocol) are identical regardless of pinning mode.
-     *
-     * @param workerCount   number of worker threads (one queue per worker)
-     * @param enablePinning whether to pin worker threads to CPU cores
-     * @param coreMap       array of logical CPU core IDs, one per worker;
-     *                      must have length {@code >= workerCount} when
-     *                      {@code enablePinning} is {@code true};
-     *                      may be {@code null} when pinning is disabled
-     * @throws IllegalArgumentException if pinning is enabled but
-     *         {@code coreMap} is {@code null} or too short
+     * <p>{@code coreMap} may be shorter than {@code workerCount}; workers
+     * are assigned cores in round-robin order over the map.
+     */
+    public ShardedExecutor(int workerCount, boolean enablePinning, int[] coreMap) {
+        this(workerCount, enablePinning, coreMap, null, ShardedRoutingConfig.defaults());
+    }
+
+    /**
+     * Full constructor. {@code workerStats} may be null when diagnostics
+     * are disabled (default). When non-null, the array length must equal
+     * {@code workerCount} — entry {@code [i]} is forwarded to worker
+     * {@code i} and updated by that worker on the hot path.
+     */
+    public ShardedExecutor(int workerCount, boolean enablePinning, int[] coreMap, WorkerStats[] workerStats) {
+        this(workerCount, enablePinning, coreMap, workerStats, ShardedRoutingConfig.defaults());
+    }
+
+    /**
+     * Routing-aware constructor. {@code routing} controls how {@code taskId}
+     * is mapped to a shard at submit time (see {@link ShardedRoutingConfig}).
      */
     @SuppressWarnings("unchecked")
-    public ShardedExecutor(int workerCount, boolean enablePinning, int[] coreMap) {
+    public ShardedExecutor(int workerCount,
+                           boolean enablePinning,
+                           int[] coreMap,
+                           WorkerStats[] workerStats,
+                           ShardedRoutingConfig routing) {
         if (enablePinning) {
             if (!CpuAffinity.isSupported()) {
                 throw new IllegalStateException(
                         "CPU pinning was requested but CpuAffinity is not supported on this platform");
             }
-            if (coreMap == null) {
+            if (coreMap == null || coreMap.length == 0) {
                 throw new IllegalArgumentException(
-                        "coreMap must not be null when pinning is enabled");
+                        "coreMap must not be null or empty when pinning is enabled");
             }
-            if (coreMap.length < workerCount) {
-                throw new IllegalArgumentException(
-                        "coreMap.length (" + coreMap.length +
-                                ") < workerCount (" + workerCount + ")");
-            }
-            // Defensive copy so the caller cannot mutate the map later.
+            // Round-robin assignment: build a per-worker map of length
+            // workerCount by cycling through the source coreMap.  This
+            // also acts as a defensive copy so the caller cannot mutate
+            // the map later.
             this.coreMap = new int[workerCount];
-            System.arraycopy(coreMap, 0, this.coreMap, 0, workerCount);
+            for (int i = 0; i < workerCount; i++) {
+                this.coreMap[i] = coreMap[i % coreMap.length];
+            }
         } else {
             this.coreMap = null;
         }
 
         this.workerCount    = workerCount;
         this.pinningEnabled = enablePinning;
+        this.routing        = routing == null ? ShardedRoutingConfig.defaults() : routing;
         this.queues         = new LinkedBlockingQueue[workerCount];
         this.workerThreads  = new Thread[workerCount];
         this.workers        = new ShardedWorker[workerCount];
         this.taskList       = BenchmarkFlags.DEBUG ? new ArrayList<>() : null;
 
+        if (workerStats != null && workerStats.length != workerCount) {
+            throw new IllegalArgumentException(
+                    "workerStats.length (" + workerStats.length
+                            + ") must equal workerCount (" + workerCount + ")");
+        }
+
         for (int i = 0; i < workerCount; i++) {
             queues[i] = new LinkedBlockingQueue<>();
 
-            // Build a ShardedWorker with the appropriate pinning config.
-            ShardedWorker worker = enablePinning
-                    ? new ShardedWorker(i, queues[i], shutdown, true, this.coreMap[i])
-                    : new ShardedWorker(i, queues[i], shutdown);
+            WorkerStats statsForWorker = workerStats == null ? null : workerStats[i];
+            ShardedWorker worker = new ShardedWorker(
+                    i, queues[i], shutdown,
+                    enablePinning,
+                    enablePinning ? this.coreMap[i] : -1,
+                    statsForWorker);
 
             workers[i]       = worker;
             workerThreads[i] = new Thread(worker, "ShardedWorker-" + i);
             workerThreads[i].setDaemon(false);
         }
 
-        // ---- Startup handshake ----
-        // Each worker counts down the latch exactly once after its
-        // pinning attempt completes (success or failure).  If any worker
-        // fails to pin, it publishes the cause into startupFailure and
-        // exits without entering the task loop.  We then tear down and
-        // rethrow from the constructor so callers never see a half-dead
-        // executor that would silently hang on submit().
-        CountDownLatch startupLatch = new CountDownLatch(workerCount);
-        AtomicReference<Throwable> startupFailure = new AtomicReference<>();
-        for (ShardedWorker w : workers) {
-            w.setStartupHandshake(startupLatch, startupFailure);
-        }
-
-        // Start all workers eagerly.
+        // Start all workers eagerly.  Pinning is attempted per-worker
+        // inside run(); failures are logged and the worker continues
+        // unpinned, so no startup handshake is required.
         for (Thread t : workerThreads) {
             t.start();
-        }
-
-        // Wait for every worker to finish its startup phase.
-        try {
-            startupLatch.await();
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            shutdown();
-            throw new IllegalStateException(
-                    "Interrupted while waiting for ShardedExecutor workers to start", ie);
-        }
-
-        Throwable failure = startupFailure.get();
-        if (failure != null) {
-            // Best-effort teardown of any workers that did start cleanly.
-            shutdown();
-            try {
-                awaitTermination(2, TimeUnit.SECONDS);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-            }
-            if (failure instanceof IllegalStateException ise) {
-                throw ise;
-            }
-            throw new IllegalStateException(
-                    "ShardedExecutor startup failed: " + failure.getMessage(), failure);
         }
     }
 
@@ -282,7 +258,7 @@ public final class ShardedExecutor implements BenchmarkExecutor {
         if (task.isMeasurement()) {
             measurementSubmitCount++;
         }
-        int shard = Math.floorMod(Long.hashCode(task.taskId()), workerCount);
+        int shard = Hashing.shardOf(task.taskId(), workerCount, routing);
         queues[shard].offer(task);
     }
 
@@ -356,6 +332,11 @@ public final class ShardedExecutor implements BenchmarkExecutor {
     /** Returns whether CPU pinning was enabled for this executor instance. */
     public boolean isPinningEnabled() {
         return pinningEnabled;
+    }
+
+    /** Returns the active routing policy (never null). */
+    public ShardedRoutingConfig routing() {
+        return routing;
     }
 
     /**

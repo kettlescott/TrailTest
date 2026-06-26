@@ -1,0 +1,114 @@
+global:
+  workerCount: 32
+  maxInflight: 32
+  seed: 3735928559
+  warmupSeconds: 10
+  measurementSeconds: 60
+  taskCount: 0
+
+workloads:
+  # Memory-bound task. MemoryBoundWorkload walks a long[] buffer per task;
+  # the per-task wall-clock target is achieved via runtime calibration of
+  # `memorySteps`. Tune the knobs below to control where in the memory
+  # hierarchy you're stressing:
+  #
+  #   bufferMB        — per-task buffer size in MiB. Choose vs. caches:
+  #                       Xeon Gold 6242 has 1 MiB L2 / core and 22 MiB
+  #                       L3 / socket. 64 MiB > L3 → DRAM-bound.
+  #                       Use 16 MiB to stay in L3, 0.5 MiB for L2, etc.
+  #   accessPattern   — random | sequential.
+  #                       random     → DRAM/LLC miss rate dominates;
+  #                                    prefetcher is defeated.
+  #                       sequential → prefetcher-friendly, BW-bound.
+  #   writeBack       — false: read-only loop (loads only).
+  #                       true:  read-modify-write (loads + stores).
+  #
+  # Calibration finds the step count yielding ~targetMillis on this host.
+  # Same memory mix as benchmarks_sharded_mem_4ms.yaml for direct A/B.
+  mem_4ms:
+    - kind: MEMORY
+      targetMillis: 4
+      ratio: 1.0
+      memory:
+        accessPattern: random
+        bufferMB: 1024
+        writeBack: false
+
+profiling:
+  enabled: true
+  control: api
+  settings: profile
+  captureLocks: true
+  lockEventThreshold: 10us
+  start: beforeMeasurement
+  stop: afterMeasurement
+  filename: "${runName}.jfr"
+  startCommand: "JFR.start name=${runName} settings=${settings} filename=${outputFile}"
+  stopCommand: "JFR.stop name=${runName} filename=${outputFile}"
+
+  perf:
+    enabled: true
+    binary: perf
+    frequency: 99
+    clock: monotonic
+    callGraph: dwarf
+    mmapPages: 2048
+    extraArgs:
+      - "--no-buildid"
+      - "--no-buildid-cache"
+      - "-z"
+      - "-e"
+      - "cycles,instructions,cache-references,cache-misses,LLC-loads,LLC-load-misses"
+      - "-e"
+      - "context-switches,cpu-migrations"
+    filename: "${runName}.perf.data"
+
+    # For memory-bound runs the cache-references / cache-misses / LLC-*
+    # counters ARE the headline results. IPC will collapse vs. cpu_4ms;
+    # cache miss rate and LLC miss rate are the metrics for the paper.
+    enablePerfStat: true
+    perfStatFilename: "${runName}.perf.stat.txt"
+    perfStatEvents:
+      - cycles
+      - instructions
+      - branches
+      - branch-misses
+      - cache-references
+      - cache-misses
+      - LLC-loads
+      - LLC-load-misses
+      - context-switches
+      - cpu-migrations
+      - page-faults
+      - task-clock
+
+  asyncProfiler:
+    enabled: true
+    binary: /home/wangs100/test/async-profiler-4.0-linux-x64/bin/asprof
+    event: wall
+    interval: 1ms
+    format: jfr
+    filename: "${runName}.async.jfr"
+    extraArgs: []
+
+runs:
+  - name: shared_mem_4ms_32_1024_wb_false
+    mode: shared
+    workload: mem_4ms
+    enabled: true
+    pinning:
+      enabled: false
+
+  - name: shared_mem_4ms_pinned
+    mode: shared
+    workload: mem_4ms
+    enabled: false
+    pinning:
+      enabled: true
+      coreMap: [
+         0,  1,  2,  3,  4,  5,  6,  7,
+         8,  9, 10, 11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20, 21, 22, 23,
+        24, 25, 26, 27, 28, 29, 30, 31
+      ]
+

@@ -8,8 +8,18 @@ public record RootConfig(
         Map<String, WorkloadConfig> workloads,
         ProfilingConfig profiling,
         HybridConfig hybrid,
+        DiagnosticsConfig diagnostics,
+        AttributionConfig attribution,
         List<RunConfig> runs
 ) {
+    /** Returns diagnostics config, never null (disabled when YAML omits it). */
+    public DiagnosticsConfig diagnosticsOrDisabled() {
+        return diagnostics == null ? DiagnosticsConfig.disabled() : diagnostics;
+    }
+    /** Returns attribution config, never null. */
+    public AttributionConfig attributionOrDisabled() {
+        return attribution == null ? AttributionConfig.disabled() : attribution;
+    }
     public void validate() {
         if (global == null) {
             throw new IllegalArgumentException("global section is required");

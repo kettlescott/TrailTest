@@ -48,6 +48,18 @@ Run with self-contained shaded JAR (built by `mvn clean package`):
 java -Xms1g -Xmx1g --enable-preview -jar target/TrailSystem-1.0-SNAPSHOT-all.jar --config=benchmarks.yaml
 ```
 
+Run with a larger heap + ZGC (recommended for long sharded runs where you want
+to remove G1 pauses as a confounding variable in tail-latency analysis):
+
+```bash
+/usr/lib/jvm/java-25-openjdk/bin/java \
+  -Xms16g -Xmx16g \
+  -XX:+UseZGC \
+  --enable-preview \
+  -jar TrailSystem-1.0-SNAPSHOT-all.jar \
+  --config=benchmarks_sharded_cpu_4ms.yaml
+```
+
 ## YAML Structure
 
 Minimal shape:

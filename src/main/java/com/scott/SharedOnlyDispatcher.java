@@ -13,7 +13,23 @@ public final class SharedOnlyDispatcher implements Dispatcher {
     private final SharedExecutor executor;
 
     public SharedOnlyDispatcher(int workerCount) {
-        this.executor = new SharedExecutor(workerCount);
+        this(workerCount, PinningConfig.disabled(), null);
+    }
+
+    public SharedOnlyDispatcher(int workerCount, PinningConfig pinning) {
+        this(workerCount, pinning, null);
+    }
+
+    /**
+     * Diagnostics-aware constructor. {@code stats} may be null; when
+     * non-null, the single aggregate WorkerStats is wired into the
+     * shared {@link ThreadPoolExecutor} via an
+     * {@code afterExecute} override (no per-task allocation).
+     */
+    public SharedOnlyDispatcher(int workerCount, PinningConfig pinning, WorkerStats stats) {
+        this.executor = new SharedExecutor(workerCount,
+                pinning == null ? PinningConfig.disabled() : pinning,
+                stats);
     }
 
     @Override

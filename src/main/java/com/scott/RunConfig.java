@@ -5,16 +5,22 @@ public record RunConfig(
         String mode,
         String workload,
         HybridConfig hybrid,
-        PinningConfig pinning
+        PinningConfig pinning,
+        boolean enabled
 ) {
-    /** Convenience constructor: no per-run hybrid override and no pinning. */
+    /** Convenience constructor: no per-run hybrid override and no pinning. Enabled by default. */
     public RunConfig(String name, String mode, String workload) {
-        this(name, mode, workload, null, null);
+        this(name, mode, workload, null, null, true);
     }
 
-    /** Convenience constructor: per-run hybrid override, no pinning. */
+    /** Convenience constructor: per-run hybrid override, no pinning. Enabled by default. */
     public RunConfig(String name, String mode, String workload, HybridConfig hybrid) {
-        this(name, mode, workload, hybrid, null);
+        this(name, mode, workload, hybrid, null, true);
+    }
+
+    /** Convenience constructor: hybrid + pinning, enabled by default. */
+    public RunConfig(String name, String mode, String workload, HybridConfig hybrid, PinningConfig pinning) {
+        this(name, mode, workload, hybrid, pinning, true);
     }
 
     public void validate() {

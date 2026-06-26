@@ -1,0 +1,66 @@
+global:
+  workerCount: 32
+  maxInflight: 64
+  seed: 3735928559
+  warmupSeconds: 10
+  measurementSeconds: 60
+  taskCount: 0
+
+workloads:
+  # Fixed CPU iteration count — bypasses runtime calibration so every
+  # run executes EXACTLY the same arithmetic per task. Must match the
+  # value in benchmarks_sharded_cpu_4ms.yaml for shared-vs-sharded A/B.
+  #
+  # Value sizing on Xeon Gold 6242 @ 2.8 GHz:
+  #   CpuBoundWorkload's loop body is ~4 simple ALU ops with high ILP,
+  #   roughly 1.5–2 ns per iteration. 2_000_000 iters ≈ 3–4 ms wall.
+  #   Re-tune if you need a different target:
+  #     1) run once with `targetMillis: 4` (calibration mode)
+  #     2) read `cpuIterations[<entry>]=N (calibrated)` from summary.txt
+  #     3) paste N back here as cpuIterations
+  cpu_4ms:
+    - { kind: CPU, cpuIterations: 160000, ratio: 1.0 }
+
+profiling:
+  enabled: true
+  control: api
+  settings: profile
+  captureLocks: true        # lower threshold to 0ms for JavaMonitorEnter/Wait/Inflate + ThreadPark
+  lockEventThreshold: 10us # threshold applied when captureLocks=true. Accepts ns/us/ms/s. Use 0ms to capture everything.
+  start: beforeMeasurement
+  stop: afterMeasurement
+  filename: "${runName}.jfr"
+  startCommand: "JFR.start name=${runName} settings=${settings} filename=${outputFile}"
+  stopCommand: "JFR.stop name=${runName} filename=${outputFile}"
+
+  perf:
+    enabled: true
+    binary: perf
+    frequency: 99
+    clock: monotonic
+    callGraph: dwarf
+    mmapPages: 2048
+    extraArgs:
+      - "--no-buildid"
+      - "--no-buildid-cache"
+      - "-z"
+      - "-e"
+      - "cycles,instructions,cache-references,cache-misses,LLC-loads,LLC-load-misses"
+      - "-e"
+      - "context-switches,cpu-migrations"
+    filename: "${runName}.perf.data"
+
+  asyncProfiler:
+    enabled: true
+    binary: /home/wangs100/test/async-profiler-4.0-linux-x64/bin/asprof
+    event: wall
+    interval: 1ms
+    format: jfr
+    filename: "${runName}.async.jfr"
+    extraArgs: []
+
+runs:
+  - name: shared_cpu_500us_64
+    mode: shared
+    workload: cpu_4ms
+

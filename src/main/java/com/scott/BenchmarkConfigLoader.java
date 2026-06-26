@@ -35,9 +35,11 @@ public final class BenchmarkConfigLoader {
             Map<String, WorkloadConfig> workloads = parseWorkloads((Map<String, Object>) root.get("workloads"));
             ProfilingConfig profiling = parseProfiling((Map<String, Object>) root.get("profiling"));
             HybridConfig hybrid = parseHybrid((Map<String, Object>) root.get("hybrid"), "hybrid");
+            DiagnosticsConfig diagnostics = parseDiagnostics((Map<String, Object>) root.get("diagnostics"));
+            AttributionConfig attribution = parseAttribution((Map<String, Object>) root.get("attribution"));
             List<RunConfig> runs = parseRuns((List<Object>) root.get("runs"));
 
-            RootConfig config = new RootConfig(global, workloads, profiling, hybrid, runs);
+            RootConfig config = new RootConfig(global, workloads, profiling, hybrid, diagnostics, attribution, runs);
             config.validate();
             return config;
         }
@@ -57,13 +59,38 @@ public final class BenchmarkConfigLoader {
         int warmupSeconds = intVal(map, "warmupSeconds", 3);
         int measurementSeconds = intVal(map, "measurementSeconds", 10);
         int taskCount = intVal(map, "taskCount", 0);
+
+        // ---- New artifact-isolation knobs (all optional; defaults
+        // preserve legacy behaviour). ----
+        ShardedRoutingConfig routing = ShardedRoutingConfig.defaults();
+        Object routingRaw = map.get("shardedRouting");
+        if (routingRaw instanceof Map<?, ?> rm) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> rMap = (Map<String, Object>) rm;
+            ShardedRoutingConfig.Mode rmode = ShardedRoutingConfig.parseMode(
+                    rMap.containsKey("mode") ? String.valueOf(rMap.get("mode")) : null);
+            long routingSeed = longVal(rMap, "routingSeed", 0L);
+            routing = new ShardedRoutingConfig(rmode, routingSeed);
+        }
+        WorkloadSeedMode workloadSeedMode = WorkloadSeedMode.parse(
+                map.containsKey("workloadSeedMode") ? String.valueOf(map.get("workloadSeedMode")) : null);
+        long workloadSeed = longVal(map, "workloadSeed", 0L);
+        BlackholeMode blackholeMode = BlackholeMode.parse(
+                map.containsKey("blackholeMode") ? String.valueOf(map.get("blackholeMode")) : null);
+        boolean retainCompletedTasks = boolVal(map, "retainCompletedTasks", false);
+
         return new GlobalConfig(
                 workerCount,
                 maxInflight,
                 seed,
                 warmupSeconds,
                 measurementSeconds,
-                taskCount
+                taskCount,
+                routing,
+                workloadSeedMode,
+                workloadSeed,
+                blackholeMode,
+                retainCompletedTasks
         );
     }
 
@@ -297,8 +324,12 @@ public final class BenchmarkConfigLoader {
             // Preserve the optional memory() block — dropping it here
             // would silently revert MEMORY entries to default
             // accessPattern / bufferMB / writeBack whenever ratios
-            // needed rescaling.
-            out.add(new WorkloadEntry(e.name(), e.kind(), e.targetMillis(), e.ratio() / sum, e.memory()));
+            // needed rescaling. Likewise preserve cpuIterations /
+            // memorySteps so fixed-sized entries are not silently
+            // reverted to the calibration path.
+            out.add(new WorkloadEntry(
+                    e.name(), e.kind(), e.targetMillis(),
+                    e.ratio() / sum, e.memory(), e.cpuIterations(), e.memorySteps()));
         }
         return out;
     }
@@ -318,10 +349,23 @@ public final class BenchmarkConfigLoader {
         String stopCommand = strVal(map, "stopCommand", null);
         long startupQuietPeriodMs = longVal(map, "startupQuietPeriodMs", 200L);
         long shutdownFlushMs      = longVal(map, "shutdownFlushMs",      100L);
+        // When true, JFR will record j.u.c lock / monitor events with a
+        // 0 ms threshold (jdk.JavaMonitorEnter, jdk.JavaMonitorWait,
+        // jdk.JavaMonitorInflate, jdk.ThreadPark). The default 'profile'
+        // preset uses a 10–20 ms threshold, which filters out almost all
+        // queue / semaphore contention in this benchmark.
+        boolean captureLocks      = boolVal(map, "captureLocks", false);
+        // JFR threshold for the lock/park event family (only used when
+        // captureLocks=true). Accepts JFR duration strings: "0ms",
+        // "500us", "1ms", "100us", etc. Smaller threshold = more events
+        // = larger .jfr file. "500us" is a good middle ground for
+        // queue-contention diagnosis without flooding the recording.
+        String lockEventThreshold = strVal(map, "lockEventThreshold", "0ms");
         PerfConfig perf = parsePerf(map.get("perf"));
         AsyncProfilerConfig async = parseAsyncProfiler(map.get("asyncProfiler"));
         return new ProfilingConfig(enabled, control, settings, start, stop, filename,
-                startCommand, stopCommand, startupQuietPeriodMs, shutdownFlushMs, perf, async);
+                startCommand, stopCommand, startupQuietPeriodMs, shutdownFlushMs,
+                perf, async, captureLocks, lockEventThreshold);
     }
 
     @SuppressWarnings("unchecked")
@@ -358,7 +402,18 @@ public final class BenchmarkConfigLoader {
         if (ea instanceof List<?> ealist) {
             for (Object o : ealist) extra.add(String.valueOf(o));
         }
-        return new PerfConfig(penabled, binary, freq, clock, callGraph, extra, pfile, mmapPages);
+        // Optional `perf stat` aggregate counters. Both fields default to
+        // "absent" so configs that don't mention them behave exactly as before.
+        Boolean enablePerfStat = pm.get("enablePerfStat") == null
+                ? null : Boolean.parseBoolean(String.valueOf(pm.get("enablePerfStat")));
+        List<String> perfStatEvents = null;
+        Object pse = pm.get("perfStatEvents");
+        if (pse instanceof List<?> pselist) {
+            perfStatEvents = new ArrayList<>();
+            for (Object o : pselist) perfStatEvents.add(String.valueOf(o));
+        }
+        return new PerfConfig(penabled, binary, freq, clock, callGraph, extra, pfile, mmapPages,
+                enablePerfStat, perfStatEvents, strVal(pm, "perfStatFilename", null));
     }
 
     @SuppressWarnings("unchecked")
@@ -379,12 +434,16 @@ public final class BenchmarkConfigLoader {
             PinningConfig pinning = parsePinning(
                     (Map<String, Object>) rm.get("pinning"),
                     "runs[" + name + "].pinning");
+            // Per-run on/off switch. Defaults to true so existing
+            // configs without the field continue to run unchanged.
+            boolean enabled = boolVal(rm, "enabled", true);
             runs.add(new RunConfig(
                     name,
                     strVal(rm, "mode", null),
                     strVal(rm, "workload", null),
                     perRunHybrid,
-                    pinning
+                    pinning,
+                    enabled
             ));
         }
         return runs;
@@ -459,6 +518,93 @@ public final class BenchmarkConfigLoader {
         }
 
         return new HybridConfig(sharedWorkers, shardedWorkers, routing);
+    }
+
+    /**
+     * Parses the optional {@code diagnostics:} block. Returns
+     * {@link DiagnosticsConfig#disabled()} when the block is missing —
+     * benchmark behaviour is then byte-identical to a build without
+     * this code.
+     */
+    private static DiagnosticsConfig parseDiagnostics(Map<String, Object> map) {
+        if (map == null) return DiagnosticsConfig.disabled();
+        // Default policy when the block exists:
+        //   enabled            : false  (must be explicitly turned on)
+        //   perWorkerLatency   : false  (HEAVY — see DiagnosticsConfig javadoc)
+        //   queueDepthByShard  : true   (cheap; useful for sharded imbalance)
+        //   windowSampling     : true   (cheap; compact per-window summaries)
+        //   windowSeconds      : 1
+        //   slowExecutionMicros: 200    (static threshold; no dynamic p95)
+        boolean enabled            = boolVal(map, "enabled",            false);
+        boolean perWorkerLatency   = boolVal(map, "perWorkerLatency",   false);
+        boolean queueDepthByShard  = boolVal(map, "queueDepthByShard",  true);
+        boolean windowSampling     = boolVal(map, "windowSampling",     true);
+        boolean windowCorrelation  = boolVal(map, "windowCorrelation",  true);
+        // Per-shard latency CSV output (SHARDED mode only). OFF by
+        // default — when on, writes 3 CSV files to the run directory.
+        boolean shardLatencyCsv    = boolVal(map, "shardLatencyCsv",    false);
+        // Per-task CSV dump (SHARDED mode only). OFF by default —
+        // heavy: writes one CSV row per measurement task.
+        boolean rawTaskLogging     = boolVal(map, "rawTaskLogging",     false);
+        // Streaming per-task execution-time CSV (any mode). OFF by
+        // default — when on, writes results/<runName>/task_execution_times.csv
+        // with one row per measurement task: kind, taskId, shardId,
+        // queueWaitNanos, executionNanos, endToEndNanos.
+        boolean taskExecutionCsv   = boolVal(map, "taskExecutionCsv",   false);
+        // Window size for the per-shard / per-window CSV. Default 100 ms.
+        long    shardWindowMillis  = longVal(map, "shardWindowMillis",  100L);
+        // Accepts decimals (e.g. 0.5, 0.1) so sub-second windows are
+        // possible for short diagnostic runs. Internally converted to
+        // nanoseconds by DiagnosticsCollector.
+        double  windowSeconds      = doubleVal(map, "windowSeconds",    1.0);
+        long    slowExecutionUs    = longVal(map, "slowExecutionMicros", 200L);
+        return new DiagnosticsConfig(enabled, perWorkerLatency, queueDepthByShard,
+                windowSampling, windowCorrelation, shardLatencyCsv, rawTaskLogging,
+                taskExecutionCsv, windowSeconds, shardWindowMillis, slowExecutionUs);
+    }
+
+    /**
+     * Parses the optional {@code attribution:} block. Returns
+     * {@link AttributionConfig#disabled()} when the block is missing.
+     *
+     * <pre>
+     * attribution:
+     *   enabled: true
+     *   sampleRate: 0.01           # 1 in 100 measurement tasks
+     *   outputCsv: ""              # blank => results/&lt;runName&gt;/task_attribution_cpu.csv
+     * </pre>
+     */
+    private static AttributionConfig parseAttribution(Map<String, Object> map) {
+        if (map == null) return AttributionConfig.disabled();
+        boolean enabled    = boolVal(map, "enabled", false);
+        double  sampleRate = doubleVal(map, "sampleRate", 0.01);
+        String  outputCsv  = strVal(map, "outputCsv", null);
+        int     bufferCap  = intVal(map, "bufferCapacityPerWorker", 65_536);
+        boolean perfEnabled = boolVal(map, "perfEnabled", false);
+        double  perfRate    = doubleVal(map, "sampledPerfRate", 1.0);
+        @SuppressWarnings("unchecked")
+        java.util.List<Object> counterObjs = (java.util.List<Object>) map.get("perfCounters");
+        java.util.List<String> counters;
+        if (counterObjs == null) {
+            counters = java.util.Collections.emptyList();
+        } else {
+            counters = new java.util.ArrayList<>(counterObjs.size());
+            for (Object o : counterObjs) {
+                if (o != null) counters.add(String.valueOf(o));
+            }
+        }
+        AttributionConfig cfg = new AttributionConfig(
+                enabled, sampleRate, outputCsv, bufferCap,
+                perfEnabled, perfRate, counters);
+        cfg.validate();
+        return cfg;
+    }
+
+    private static double doubleVal(Map<String, Object> map, String key, double defaultVal) {
+        Object value = map.get(key);
+        if (value == null) return defaultVal;
+        if (value instanceof Number n) return n.doubleValue();
+        return Double.parseDouble(String.valueOf(value));
     }
 
     private static int intVal(Map<String, Object> map, String key, int defaultVal) {

@@ -1,0 +1,217 @@
+global:
+  workerCount: 32
+  maxInflight: 64
+  seed: 3735928559
+  warmupSeconds: 10
+  measurementSeconds: 60
+  taskCount: 0
+
+workloads:
+  # Memory-bound task. See benchmarks_shared_mem_4ms.yaml for parameter
+  # commentary. Identical knobs here (including the fixed memorySteps)
+  # so shared-vs-sharded is a clean A/B — both sides do exactly the same
+  # amount of work per task, regardless of host calibration drift.
+  mem_4ms:
+    - kind: MEMORY
+      memorySteps: 30729
+      ratio: 1.0
+      memory:
+        accessPattern: random
+        bufferMB: 64
+        writeBack: false
+
+profiling:
+  enabled: true
+  control: api
+  settings: profile
+  captureLocks: true
+  lockEventThreshold: 10us
+  start: beforeMeasurement
+  stop: afterMeasurement
+  filename: "${runName}.jfr"
+  startCommand: "JFR.start name=${runName} settings=${settings} filename=${outputFile}"
+  stopCommand: "JFR.stop name=${runName} filename=${outputFile}"
+
+  perf:
+    enabled: true
+    binary: perf
+    frequency: 99
+    clock: monotonic
+    callGraph: dwarf
+    mmapPages: 2048
+    extraArgs:
+      - "--no-buildid"
+      - "--no-buildid-cache"
+      - "-z"
+      - "-e"
+      - "cycles,instructions,cache-references,cache-misses,LLC-loads,LLC-load-misses"
+      - "-e"
+      - "context-switches,cpu-migrations"
+    filename: "${runName}.perf.data"
+
+    enablePerfStat: true
+    perfStatFilename: "${runName}.perf.stat.txt"
+    perfStatEvents:
+      - cycles
+      - instructions
+      - branches
+      - branch-misses
+      - cache-references
+      - cache-misses
+      - LLC-loads
+      - LLC-load-misses
+      - context-switches
+      - cpu-migrations
+      - page-faults
+      - task-clock
+
+  asyncProfiler:
+    enabled: true
+    binary: /home/wangs100/test/async-profiler-4.0-linux-x64/bin/asprof
+    event: wall
+    interval: 1ms
+    format: jfr
+    filename: "${runName}.async.jfr"
+    extraArgs: []
+
+# Optional per-worker / per-shard diagnostics (SHARDED mode only).
+# All flags default to false / off; the entire block can be omitted with
+# zero effect on benchmark behavior. Use this to investigate tail
+# latency / queue imbalance on memory-bound or pinned runs.
+#
+#   perWorkerLatency    : HEAVY — adds one LatencyRecorder per worker.
+#                         Each recorder keeps four long[] buffers
+#                         (submitOverhead + queueWait + execution +
+#                         endToEnd). Cost ≈ tasks × 4 × 8 bytes. Enable
+#                         only on diagnostic runs with a bounded
+#                         taskCount; leave off for headline experiments.
+#   queueDepthByShard   : cheap; aggregates per-shard queue depth across
+#                         windows.
+#   windowSampling      : cheap; compact per-window summaries
+#                         (completedPerWorker min/mean/max/maxOverMin +
+#                         maxShardQueueDepth + queueDepthImbalance).
+#   slowExecutionMicros : static threshold for slow-burst counters.
+#                         A task is "slow" if execution exceeds this.
+#                         200µs is reasonable for 4ms targets; raise if
+#                         the workload itself is slower on average.
+diagnostics:
+  enabled: true
+  perWorkerLatency: false        # HEAVY: enable only for bounded diagnostic runs
+  queueDepthByShard: true
+  windowSampling: true
+  windowCorrelation: true        # Pearson r across windows: depth ↔ exec / slow / completed / qw
+  windowSeconds: 1
+  slowExecutionMicros: 200
+  # Per-shard / per-window CSV export (SHARDED only). Writes 3 files to
+  # results/<runName>/:
+  #   per_shard_latency.csv         — one row per shard (percentiles + depth).
+  #   per_window_shard_latency.csv  — one row per (window, shard); window
+  #                                   size = shardWindowMillis (default 100).
+  #                                   Columns: completedTasks, enqueuedTasks,
+  #                                   throughputTasksPerSec, backlogDelta,
+  #                                   exec/qwait/e2e avg+p95+p99, avg/max depth.
+  #   shard_window_correlation.csv  — one row per shard; 6 Pearson r values:
+  #                                     execP95_t  vs depth_t            (coincident)
+  #                                     execP95_t  vs depth_{t+1}        (exec leads backlog)
+  #                                     execP99_t  vs qwP99_{t+1}        (exec leads observed qwait)
+  #                                     execP95_t  vs throughput_t       (slower exec → lower throughput)
+  #                                     execP95_t  vs backlogDelta_t     (slower exec → backlog growth)
+  #                                     backlogDelta_t vs depth_{t+1}    (backlog leads next-window depth)
+  # Memory: ~tasks × 24 B for percentile sorts + ~shards × measurementMs/10 × 4 B
+  # for the depth timeline. Bounded; OK for full-length runs.
+  shardLatencyCsv: true
+  shardWindowMillis: 100
+
+  # Optional per-task CSV (HEAVY — diagnostic runs only). When true,
+  # writes results/<runName>/per_task.csv with one row per measurement
+  # task: taskId, shardId, workerId, enqueueNanos, startNanos,
+  # finishNanos, queueWaitNanos, executionNanos, endToEndNanos.
+  # Stream-written via BufferedWriter (no large in-memory buffer), but
+  # the file size scales linearly with task count — a 60s run at
+  # 300k tasks/s produces ~18M rows. Enable only when investigating
+  # specific tasks; leave OFF for headline / steady-state experiments.
+  rawTaskLogging: false
+
+# Optional per-task attribution (sampled CSV) — lightweight research /
+# debugging helper for slow-task investigation. Disabled by default.
+#
+# When enabled, every sampled measurement task contributes one row to
+# results/<runName>/task_attribution_cpu.csv with:
+#   runName, mode, workload, taskId, workerId, shardId, sampled,
+#   executionNs, <hw counter placeholders (-1)>, gcNearby, safepointNearby
+#
+# Sampling is deterministic: sampled = (taskId % round(1/sampleRate)) == 0.
+# Recording uses per-worker fixed-capacity primitive arrays; the hot
+# path is allocation-free and unsynchronised. CSV is written once,
+# after dispatcher termination.
+#
+#   sampleRate              : fraction of measurement tasks recorded
+#                             (0.01 = 1-in-100). For a 60s run at
+#                             ~8 k tasks/s, 0.01 yields ~4 800 rows.
+#   outputCsv               : blank => results/<runName>/task_attribution_cpu.csv
+#   bufferCapacityPerWorker : fixed long[] capacity per worker. When a
+#                             worker's buffer fills, additional samples
+#                             are dropped and counted (no array grow,
+#                             no allocation on the hot path).
+#
+# Summary line after the run shows:
+#   (N sampled, M dropped, K missingBuffer, 1-in-R)
+# Healthy runs report dropped=0 and missingBuffer=0.
+#
+# Analyse with:
+#   java -cp <jar> com.scott.AttributionAnalyzer \
+#        results/<runName>/task_attribution_cpu.csv
+attribution:
+  enabled: true
+  sampleRate: 0.01
+  outputCsv: ""
+  bufferCapacityPerWorker: 65536
+  # perfEnabled: open Linux perf_event_open counters per worker thread
+  # and record per-task deltas. Requires native/linux-x86_64/
+  # libperfbridge.so (built via scripts/build-native.sh) AND a kernel
+  # that permits perf_event_open for the current user (typically
+  # /proc/sys/kernel/perf_event_paranoid <= 2, or CAP_PERFMON).
+  # If the native bridge fails to load OR a particular counter cannot
+  # be opened, attribution degrades silently: deltas reported as 0
+  # and perfAvailable=false on that row.
+  perfEnabled: true
+  # sampledPerfRate: fraction of sampled rows that additionally read
+  # perf counters. 1.0 = every sampled row (default). 0.1 = 1-in-10
+  # sampled rows triggers the native read pair. Lets you keep a high
+  # CSV sample rate while keeping perf-syscall overhead bounded.
+  sampledPerfRate: 1.0
+  # perfCounters: subset of counters to open per worker. Omit / leave
+  # empty for the minimal default set:
+  #   cycles, instructions, LLC-loads, LLC-load-misses,
+  #   context-switches, cpu-migrations
+  # Accepted spellings: dash-separated (LLC-load-misses),
+  # camelCase (llcLoadMisses), or underscored.
+  perfCounters:
+    - cycles
+    - instructions
+    - LLC-loads
+    - LLC-load-misses
+    - context-switches
+    - cpu-migrations
+
+runs:
+  - name: sharded_mem_4ms
+    mode: sharded
+    workload: mem_4ms
+    enabled: false
+    pinning:
+      enabled: false
+
+  - name: sharded_mem_4ms_pinned
+    mode: sharded
+    workload: mem_4ms
+    enabled: true
+    pinning:
+      enabled: true
+      coreMap: [
+         0,  1,  2,  3,  4,  5,  6,  7,
+         8,  9, 10, 11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20, 21, 22, 23,
+        24, 25, 26, 27, 28, 29, 30, 31
+      ]
+

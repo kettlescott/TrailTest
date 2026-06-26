@@ -12,36 +12,50 @@ public record ProfilingConfig(
         long startupQuietPeriodMs,
         long shutdownFlushMs,
         PerfConfig perf,
-        AsyncProfilerConfig asyncProfiler
+        AsyncProfilerConfig asyncProfiler,
+        boolean captureLocks,
+        String lockEventThreshold
 ) {
-    /** Back-compat constructor used by older call sites (no quiet/flush, no async). */
-    public ProfilingConfig(boolean enabled,
-                           String control,
-                           String settings,
-                           String start,
-                           String stop,
-                           String filename,
-                           String startCommand,
-                           String stopCommand,
-                           PerfConfig perf) {
+    /** Back-compat: no quiet/flush, no async, no captureLocks. */
+    public ProfilingConfig(boolean enabled, String control, String settings,
+                           String start, String stop, String filename,
+                           String startCommand, String stopCommand, PerfConfig perf) {
         this(enabled, control, settings, start, stop, filename,
-             startCommand, stopCommand, 200L, 100L, perf, null);
+             startCommand, stopCommand, 200L, 100L, perf, null, false, "0ms");
     }
 
-    /** Back-compat constructor (pre-async-profiler callers). */
-    public ProfilingConfig(boolean enabled,
-                           String control,
-                           String settings,
-                           String start,
-                           String stop,
-                           String filename,
-                           String startCommand,
-                           String stopCommand,
-                           long startupQuietPeriodMs,
-                           long shutdownFlushMs,
+    /** Back-compat: pre-async-profiler. */
+    public ProfilingConfig(boolean enabled, String control, String settings,
+                           String start, String stop, String filename,
+                           String startCommand, String stopCommand,
+                           long startupQuietPeriodMs, long shutdownFlushMs,
                            PerfConfig perf) {
         this(enabled, control, settings, start, stop, filename,
-             startCommand, stopCommand, startupQuietPeriodMs, shutdownFlushMs, perf, null);
+             startCommand, stopCommand, startupQuietPeriodMs, shutdownFlushMs,
+             perf, null, false, "0ms");
+    }
+
+    /** Back-compat: pre-captureLocks. */
+    public ProfilingConfig(boolean enabled, String control, String settings,
+                           String start, String stop, String filename,
+                           String startCommand, String stopCommand,
+                           long startupQuietPeriodMs, long shutdownFlushMs,
+                           PerfConfig perf, AsyncProfilerConfig asyncProfiler) {
+        this(enabled, control, settings, start, stop, filename,
+             startCommand, stopCommand, startupQuietPeriodMs, shutdownFlushMs,
+             perf, asyncProfiler, false, "0ms");
+    }
+
+    /** Back-compat: pre-lockEventThreshold (captureLocks present, threshold defaulted to 0ms). */
+    public ProfilingConfig(boolean enabled, String control, String settings,
+                           String start, String stop, String filename,
+                           String startCommand, String stopCommand,
+                           long startupQuietPeriodMs, long shutdownFlushMs,
+                           PerfConfig perf, AsyncProfilerConfig asyncProfiler,
+                           boolean captureLocks) {
+        this(enabled, control, settings, start, stop, filename,
+             startCommand, stopCommand, startupQuietPeriodMs, shutdownFlushMs,
+             perf, asyncProfiler, captureLocks, "0ms");
     }
 
     public void validate() {
@@ -83,6 +97,11 @@ public record ProfilingConfig(
         }
         if (shutdownFlushMs < 0) {
             throw new IllegalArgumentException("profiling.shutdownFlushMs must be >= 0");
+        }
+        if (captureLocks && (lockEventThreshold == null || lockEventThreshold.isBlank())) {
+            throw new IllegalArgumentException(
+                    "profiling.lockEventThreshold must not be blank when captureLocks is true "
+                            + "(e.g. '0ms', '500us', '1ms')");
         }
         if (perf != null) {
             perf.validate();

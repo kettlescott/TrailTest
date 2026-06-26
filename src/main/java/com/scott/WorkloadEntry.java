@@ -21,24 +21,62 @@ public record WorkloadEntry(
         WorkloadKind kind,
         long targetMillis,
         double ratio,
-        MemoryWorkloadConfig memory
+        MemoryWorkloadConfig memory,
+        int cpuIterations,
+        int memorySteps
 ) {
 
-    /** Backwards-compatible constructor: no MEMORY config (defaults applied if needed). */
+    /** Backwards-compatible constructor: no MEMORY config, no fixed cpuIterations. */
     public WorkloadEntry(String name, WorkloadKind kind, long targetMillis, double ratio) {
-        this(name, kind, targetMillis, ratio, null);
+        this(name, kind, targetMillis, ratio, null, 0, 0);
+    }
+
+    /** Backwards-compatible constructor: explicit MEMORY config, no fixed cpuIterations. */
+    public WorkloadEntry(String name, WorkloadKind kind, long targetMillis, double ratio,
+                         MemoryWorkloadConfig memory) {
+        this(name, kind, targetMillis, ratio, memory, 0, 0);
+    }
+
+    /** Backwards-compatible constructor: pre-memorySteps callers. */
+    public WorkloadEntry(String name, WorkloadKind kind, long targetMillis, double ratio,
+                         MemoryWorkloadConfig memory, int cpuIterations) {
+        this(name, kind, targetMillis, ratio, memory, cpuIterations, 0);
     }
 
     public WorkloadEntry {
         if (kind == null) {
             throw new IllegalArgumentException("workload entry: kind is required");
         }
-        if (targetMillis <= 0) {
-            throw new IllegalArgumentException("workload entry: targetMillis must be > 0");
+        if (cpuIterations > 0 && kind != WorkloadKind.CPU) {
+            throw new IllegalArgumentException(
+                    "cpuIterations is only valid for CPU workloads");
+        }
+        if (memorySteps > 0 && kind != WorkloadKind.MEMORY) {
+            throw new IllegalArgumentException(
+                    "memorySteps is only valid for MEMORY workloads");
+        }
+        // targetMillis is required UNLESS calibration is bypassed via a
+        // fixed-iteration CPU entry or a fixed-step MEMORY entry. In
+        // those cases targetMillis becomes a display-only label and may
+        // be 0 / omitted from YAML.
+        if (targetMillis <= 0 && cpuIterations <= 0 && memorySteps <= 0) {
+            throw new IllegalArgumentException(
+                    "workload entry: targetMillis must be > 0 "
+                            + "(or set cpuIterations > 0 for CPU / memorySteps > 0 for MEMORY)");
         }
         if (ratio <= 0.0 || !Double.isFinite(ratio)) {
             throw new IllegalArgumentException("workload entry: ratio must be > 0");
         }
+    }
+
+    /** True when this entry runs a fixed iteration count (no calibration). */
+    public boolean usesFixedCpuIterations() {
+        return kind == WorkloadKind.CPU && cpuIterations > 0;
+    }
+
+    /** True when this entry runs a fixed memory step count (no calibration). */
+    public boolean usesFixedMemorySteps() {
+        return kind == WorkloadKind.MEMORY && memorySteps > 0;
     }
 
     public String displayName() {
@@ -63,11 +101,30 @@ public record WorkloadEntry(
             throw new IllegalArgumentException(path + ".kind is required (CPU|MEMORY|IO)");
         }
         WorkloadKind kind = WorkloadKind.fromLabel(String.valueOf(kindRaw));
+
+        // Optional fixed-iteration count. CPU-only validity is enforced
+        // by the record's compact constructor below.
+        Object ciRaw = em.get("cpuIterations");
+        int cpuIterations = ciRaw == null ? 0 : Integer.parseInt(String.valueOf(ciRaw));
+
+        // Optional fixed memory step count. MEMORY-only validity is
+        // enforced by the record's compact constructor below.
+        Object msRaw = em.get("memorySteps");
+        int memorySteps = msRaw == null ? 0 : Integer.parseInt(String.valueOf(msRaw));
+
+        // targetMillis is optional only when calibration is bypassed via
+        // cpuIterations (CPU) or memorySteps (MEMORY).
         Object tm = em.get("targetMillis");
-        if (tm == null) {
-            throw new IllegalArgumentException(path + ".targetMillis is required");
+        long targetMillis;
+        if (tm != null) {
+            targetMillis = Long.parseLong(String.valueOf(tm));
+        } else if (cpuIterations > 0 || memorySteps > 0) {
+            targetMillis = 0L;
+        } else {
+            throw new IllegalArgumentException(
+                    path + ".targetMillis is required "
+                            + "(or set cpuIterations > 0 for CPU / memorySteps > 0 for MEMORY)");
         }
-        long targetMillis = Long.parseLong(String.valueOf(tm));
         Object r = em.get("ratio");
         double ratio = r == null ? 1.0 : Double.parseDouble(String.valueOf(r));
 
@@ -84,7 +141,7 @@ public record WorkloadEntry(
             }
         }
 
-        return new WorkloadEntry(name, kind, targetMillis, ratio, memory);
+        return new WorkloadEntry(name, kind, targetMillis, ratio, memory, cpuIterations, memorySteps);
     }
 
     private static MemoryWorkloadConfig parseMemory(Map<String, Object> mm, String path) {
@@ -109,7 +166,13 @@ public record WorkloadEntry(
           .append(", kind=").append(kind.name())
           .append(", targetMillis=").append(targetMillis)
           .append(", ratio=").append(String.format("%.4f", ratio));
+        if (kind == WorkloadKind.CPU && cpuIterations > 0) {
+            sb.append(", cpuIterations=").append(cpuIterations);
+        }
         if (kind == WorkloadKind.MEMORY) {
+            if (memorySteps > 0) {
+                sb.append(", memorySteps=").append(memorySteps);
+            }
             sb.append(", ").append(memoryOrDefaults().summary());
         }
         return sb.toString();

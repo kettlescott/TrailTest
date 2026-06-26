@@ -40,20 +40,24 @@ public final class TaskGenerator {
             WorkloadKind kind,
             long targetMillis,
             int cpuIterations,
+            boolean fixedCpuIterations,
             int memorySteps,
             int memoryBufferMB,
             MemoryBoundWorkload.AccessPattern memoryAccessPattern,
-            boolean memoryWriteBack
+            boolean memoryWriteBack,
+            boolean fixedMemorySteps
     ) {
         public String summary() {
             return switch (kind) {
                 case CPU    -> String.format(
-                        "name=%s, kind=CPU, targetMillis=%d, cpuIterations=%d",
-                        name, targetMillis, cpuIterations);
+                        "name=%s, kind=CPU, targetMillis=%d, cpuIterations=%d%s",
+                        name, targetMillis, cpuIterations,
+                        fixedCpuIterations ? "  (fixed; calibration bypassed)" : "");
                 case MEMORY -> String.format(
-                        "name=%s, kind=MEMORY, targetMillis=%d, memorySteps=%d, "
+                        "name=%s, kind=MEMORY, targetMillis=%d, memorySteps=%d%s, "
                                 + "bufferMB=%d, accessPattern=%s, writeBack=%s",
                         name, targetMillis, memorySteps,
+                        fixedMemorySteps ? " (fixed)" : "",
                         memoryBufferMB, memoryAccessPattern, memoryWriteBack);
                 case IO     -> String.format(
                         "name=%s, kind=IO, targetMillis=%d  (no calibration; parkNanos)",
@@ -75,7 +79,16 @@ public final class TaskGenerator {
             long targetNanos = entry.targetMillis() * 1_000_000L;
             switch (entry.kind()) {
                 case CPU -> {
-                    this.cpuIterations = WorkloadCalibrator.calibrateIterations(targetNanos, baseSeed);
+                    // Fixed-iteration mode (cpuIterations > 0) bypasses the
+                    // calibrator entirely. Otherwise, fall back to the
+                    // existing targetMillis-driven calibration. Resolution
+                    // happens once here at construction so the per-task
+                    // hot path has no extra branching.
+                    if (entry.cpuIterations() > 0) {
+                        this.cpuIterations = entry.cpuIterations();
+                    } else {
+                        this.cpuIterations = WorkloadCalibrator.calibrateIterations(targetNanos, baseSeed);
+                    }
                     this.memorySteps     = 0;
                     this.memoryBuffer    = null;
                     this.memoryPattern   = null;
@@ -87,8 +100,16 @@ public final class TaskGenerator {
                     this.memoryBuffer    = buf;
                     this.memoryPattern   = mem.accessPattern();
                     this.memoryWriteBack = mem.writeBack();
-                    this.memorySteps     = WorkloadCalibrator.calibrateMemorySteps(
-                            targetNanos, buf, this.memoryPattern, this.memoryWriteBack, baseSeed);
+                    // Fixed-step mode (memorySteps > 0) bypasses the
+                    // calibrator entirely, mirroring CPU's cpuIterations
+                    // fast-path. Otherwise fall back to the existing
+                    // targetMillis-driven calibration.
+                    if (entry.memorySteps() > 0) {
+                        this.memorySteps = entry.memorySteps();
+                    } else {
+                        this.memorySteps = WorkloadCalibrator.calibrateMemorySteps(
+                                targetNanos, buf, this.memoryPattern, this.memoryWriteBack, baseSeed);
+                    }
                     this.cpuIterations   = 0;
                 }
                 case IO -> {
@@ -117,10 +138,19 @@ public final class TaskGenerator {
     private final long seed;
     private final EntryState[] states;
     private final double[] cumulative; // normalized cdf, length == states.length
+    private final WorkloadSeedMode seedMode;
+    private final long workloadSeed;
 
     public TaskGenerator(WorkloadConfig workload, long seed) {
+        this(workload, seed, WorkloadSeedMode.SEQUENTIAL_TASK_ID, 0L);
+    }
+
+    public TaskGenerator(WorkloadConfig workload, long seed,
+                         WorkloadSeedMode seedMode, long workloadSeed) {
         this.workload = workload;
         this.seed = seed;
+        this.seedMode = seedMode == null ? WorkloadSeedMode.SEQUENTIAL_TASK_ID : seedMode;
+        this.workloadSeed = workloadSeed;
 
         List<WorkloadEntry> entries = workload.entries();
         this.states = new EntryState[entries.size()];
@@ -144,7 +174,16 @@ public final class TaskGenerator {
 
 
     public Task nextTask(long taskId, boolean measurement, Runnable onComplete) {
-        long taskSeed = seed + taskId;
+        return nextTask(taskId, measurement, onComplete, null);
+    }
+
+    public Task nextTask(long taskId,
+                         boolean measurement,
+                         Runnable onComplete,
+                         Task.CompletionObserver completionObserver) {
+        long taskSeed = (seedMode == WorkloadSeedMode.MIXED_TASK_ID)
+                ? (seed ^ Hashing.mix64(taskId ^ workloadSeed))
+                : (seed + taskId);
         EntryState es = selectEntry(taskId);
         Workload w = createWorkload(es, taskSeed);
         long createdNanos = System.nanoTime();
@@ -154,7 +193,8 @@ public final class TaskGenerator {
                 createdNanos,
                 measurement,
                 w,
-                onComplete);
+                onComplete,
+                completionObserver);
     }
 
     private Workload createWorkload(EntryState es, long taskSeed) {
@@ -204,10 +244,12 @@ public final class TaskGenerator {
                     s.entry.kind(),
                     s.entry.targetMillis(),
                     s.cpuIterations,
+                    s.entry.usesFixedCpuIterations(),
                     s.memorySteps,
                     bufferMB,
                     s.memoryPattern,
-                    s.memoryWriteBack));
+                    s.memoryWriteBack,
+                    s.entry.usesFixedMemorySteps()));
         }
         return out;
     }

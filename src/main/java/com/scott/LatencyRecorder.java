@@ -71,6 +71,18 @@ public final class LatencyRecorder {
         long ex = task.executionTimeNanos();
         long e2e = task.endToEndLatencyNanos();
 
+        recordRaw(so, qw, ex, e2e);
+    }
+
+    /**
+     * Records primitive latency samples directly.
+     *
+     * <p>Used by the non-retaining measurement path that aggregates
+     * latencies online from completion callbacks without storing full
+     * {@link Task} objects.</p>
+     */
+    public void recordRaw(long so, long qw, long ex, long e2e) {
+
         submitOverheadNanos.add(so);
         queueWaitNanos.add(qw);
         executionNanos.add(ex);
@@ -130,6 +142,14 @@ public final class LatencyRecorder {
     public long maxEndToEnd()       { return endToEndNanos.isEmpty()       ? 0L : maxEndToEndNanos;       }
 
     /* ================================================================
+     *  Averages (nanoseconds)
+     *  Computed once at end-of-run for summary reporting; the recording
+     *  hot path stays allocation-free.
+     * ================================================================ */
+
+    public double avgExecution() { return mean(executionNanos); }
+
+    /* ================================================================
      *  Summary
      * ================================================================ */
 
@@ -180,6 +200,15 @@ public final class LatencyRecorder {
         index = Math.max(0, Math.min(index, sorted.length - 1));
         return sorted[index];
     }
+
+    private static double mean(LongBuffer data) {
+        if (data.isEmpty()) return 0.0;
+        long[] arr = data.toArray();
+        long sum = 0L;
+        for (long v : arr) sum += v;
+        return (double) sum / arr.length;
+    }
+
 
     private static String formatRow(String label,
                                     double p50, double p90, double p95, double p99,

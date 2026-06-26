@@ -56,15 +56,53 @@ public final class SharedExecutor implements BenchmarkExecutor {
      * @param poolSize number of fixed worker threads
      */
     public SharedExecutor(int poolSize) {
+        this(poolSize, PinningConfig.disabled(), null);
+    }
+
+    /**
+     * Creates the shared executor with optional CPU pinning.
+     */
+    public SharedExecutor(int poolSize, PinningConfig pinning) {
+        this(poolSize, pinning, null);
+    }
+
+    /**
+     * Diagnostics-aware constructor. {@code stats} may be null
+     * (default) — when non-null, it is updated once per completed
+     * task via a {@link ThreadPoolExecutor#afterExecute} override.
+     * No per-task allocation: {@code afterExecute} is invoked by the
+     * JDK on the worker thread itself.
+     *
+     * <p>Ordering note: {@code afterExecute} runs <em>after</em> the
+     * {@link Task#run()} finally block (and therefore after the
+     * in-flight permit has been released). For the SHARED aggregate
+     * view used by the diagnostics correlator this lag is bounded by
+     * {@code poolSize} tasks and is statistically irrelevant.
+     */
+    public SharedExecutor(int poolSize, PinningConfig pinning, WorkerStats stats) {
         this.workQueue = new LinkedBlockingQueue<>();
         this.taskList  = BenchmarkFlags.DEBUG ? new ArrayList<>() : null;
-        this.executor = new ThreadPoolExecutor(
-                poolSize,                       // corePoolSize  (fixed)
-                poolSize,                       // maximumPoolSize (fixed)
-                0L, TimeUnit.MILLISECONDS,      // keep-alive (irrelevant for fixed pool)
-                workQueue,                      // single shared queue
-                new DeterministicThreadFactory() // predictable thread names
-        );
+        if (stats == null) {
+            this.executor = new ThreadPoolExecutor(
+                    poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
+                    workQueue,
+                    new DeterministicThreadFactory(pinning));
+        } else {
+            // Subclass override is the JDK-blessed way to observe per-task
+            // completion on the worker thread without wrapping Runnables.
+            this.executor = new ThreadPoolExecutor(
+                    poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
+                    workQueue,
+                    new DeterministicThreadFactory(pinning)) {
+                @Override
+                protected void afterExecute(Runnable r, Throwable t) {
+                    super.afterExecute(r, t);
+                    if (r instanceof Task task) {
+                        stats.onTaskCompleted(task);
+                    }
+                }
+            };
+        }
     }
 
     /* ---- submission ---- */
@@ -174,10 +212,55 @@ public final class SharedExecutor implements BenchmarkExecutor {
 
     private static final class DeterministicThreadFactory implements ThreadFactory {
         private final AtomicInteger counter = new AtomicInteger(0);
+        private final PinningConfig pinning;
+
+        DeterministicThreadFactory() {
+            this(PinningConfig.disabled());
+        }
+
+        DeterministicThreadFactory(PinningConfig pinning) {
+            this.pinning = (pinning == null) ? PinningConfig.disabled() : pinning;
+        }
 
         @Override
         public Thread newThread(Runnable r) {
-            Thread t = new Thread(r, "SharedWorker-" + counter.getAndIncrement());
+            int idx = counter.getAndIncrement();
+            final int workerIdx = idx;
+            final boolean doPin = pinning.enabled()
+                    && pinning.coreMap() != null
+                    && pinning.coreMap().length > 0;
+            final int coreId = doPin ? pinning.coreMap()[idx % pinning.coreMap().length] : -1;
+            // Always wrap: the wrapper performs (optional) CPU pinning
+            // AND a one-shot attribution-buffer registration at worker
+            // startup. When attribution is disabled the registration
+            // is a single static volatile read + null check.
+            Runnable body = () -> {
+                if (doPin) {
+                    try {
+                        CpuAffinity.pinCurrentThreadToCore(coreId);
+                    } catch (Throwable e) {
+                        System.err.printf("[SharedWorker-%d] WARN: failed to pin to core %d: %s%n",
+                                workerIdx, coreId, e.getMessage());
+                    }
+                }
+                AttributionRecorder _attrib = AttributionRecorder.active();
+                if (_attrib != null) {
+                    // SHARED worker (incl. hybrid shared side): shardId = -1.
+                    _attrib.ensureBufferForCurrentThread(workerIdx, -1);
+                }
+                // Always close perf fds when the worker thread exits,
+                // even on abnormal termination. Idempotent — the
+                // recorder's flushAndClose() also calls close on any
+                // surviving fds, so calling it here is safe.
+                try {
+                    r.run();
+                } finally {
+                    if (_attrib != null) {
+                        _attrib.closePerfFdsForCurrentThread();
+                    }
+                }
+            };
+            Thread t = new Thread(body, "SharedWorker-" + idx);
             t.setDaemon(false);
             return t;
         }

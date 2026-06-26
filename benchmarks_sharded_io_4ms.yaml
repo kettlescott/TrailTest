@@ -1,0 +1,134 @@
+global:
+  workerCount: 32
+  maxInflight: 64
+  seed: 3735928559
+  warmupSeconds: 10
+  measurementSeconds: 60
+  taskCount: 0
+
+workloads:
+  # IO-bound task: SyntheticBlockingIOWorkload uses LockSupport.parkNanos
+  # to simulate a blocking I/O wait. No calibration is performed — the
+  # task simply parks for ~targetMillis. Matches benchmarks_shared_io_4ms.yaml
+  # for direct shared-vs-sharded A/B.
+  io_4ms:
+    - { kind: IO, targetMillis: 4, ratio: 1.0 }
+
+profiling:
+  enabled: true
+  control: api
+  settings: profile
+  captureLocks: true
+  lockEventThreshold: 10us
+  start: beforeMeasurement
+  stop: afterMeasurement
+  filename: "${runName}.jfr"
+  startCommand: "JFR.start name=${runName} settings=${settings} filename=${outputFile}"
+  stopCommand: "JFR.stop name=${runName} filename=${outputFile}"
+
+  perf:
+    enabled: true
+    binary: perf
+    frequency: 99
+    clock: monotonic
+    callGraph: dwarf
+    mmapPages: 2048
+    extraArgs:
+      - "--no-buildid"
+      - "--no-buildid-cache"
+      - "-z"
+      - "-e"
+      - "cycles,instructions,cache-references,cache-misses,LLC-loads,LLC-load-misses"
+      - "-e"
+      - "context-switches,cpu-migrations"
+    filename: "${runName}.perf.data"
+
+    enablePerfStat: true
+    perfStatFilename: "${runName}.perf.stat.txt"
+    perfStatEvents:
+      - cycles
+      - instructions
+      - branches
+      - branch-misses
+      - cache-references
+      - cache-misses
+      - LLC-loads
+      - LLC-load-misses
+      - context-switches
+      - cpu-migrations
+      - page-faults
+      - task-clock
+
+  asyncProfiler:
+    enabled: true
+    binary: /home/wangs100/test/async-profiler-4.0-linux-x64/bin/asprof
+    event: wall
+    interval: 1ms
+    format: jfr
+    filename: "${runName}.async.jfr"
+    extraArgs: []
+
+# Optional per-worker / per-shard diagnostics (SHARDED mode only).
+# All flags default to false / off; the entire block can be omitted with
+# zero effect on benchmark behavior. Use this to investigate tail
+# latency / queue imbalance on IO-bound or pinned runs.
+#
+#   perWorkerLatency    : HEAVY — adds one LatencyRecorder per worker.
+#                         Each recorder keeps four long[] buffers
+#                         (submitOverhead + queueWait + execution +
+#                         endToEnd). Cost ≈ tasks × 4 × 8 bytes. Enable
+#                         only on diagnostic runs with a bounded
+#                         taskCount; leave off for headline experiments.
+#   queueDepthByShard   : cheap; aggregates per-shard queue depth across
+#                         windows.
+#   windowSampling      : cheap; compact per-window summaries
+#                         (completedPerWorker min/mean/max/maxOverMin +
+#                         maxShardQueueDepth + queueDepthImbalance).
+#   slowExecutionMicros : static threshold for slow-burst counters.
+#                         A task is "slow" if execution exceeds this.
+#                         For IO tasks targeting ~4 ms park time, a
+#                         conservative threshold ~ targetMillis * 2
+#                         (e.g. 8000µs) keeps the slow counter
+#                         meaningful; tune to your run.
+diagnostics:
+  enabled: true
+  perWorkerLatency: false        # HEAVY: enable only for bounded diagnostic runs
+  queueDepthByShard: true
+  windowSampling: true
+  windowCorrelation: true
+  windowSeconds: 1
+  slowExecutionMicros: 8000
+  # Per-shard / per-window CSV export (SHARDED only). Writes:
+  #   per_shard_latency.csv         — one row per shard.
+  #   per_window_shard_latency.csv  — completedTasks + enqueuedTasks +
+  #                                   throughput + backlogDelta + exec/
+  #                                   qwait/e2e avg+p95+p99 + depth.
+  #   shard_window_correlation.csv  — 6 Pearson r per shard, including
+  #                                   execP95↔throughput, execP95↔backlogDelta,
+  #                                   and backlogDelta→depth_{t+1}.
+  shardLatencyCsv: true
+  shardWindowMillis: 100
+  # Optional per-task CSV (HEAVY — diagnostic runs only). OFF by default.
+  rawTaskLogging: false
+
+runs:
+  - name: sharded_io_4ms
+    mode: sharded
+    workload: io_4ms
+    enabled: false
+    pinning:
+      enabled: false
+
+  - name: sharded_io_4ms_pinned
+    mode: sharded
+    workload: io_4ms
+    enabled: true
+    pinning:
+      enabled: true
+      coreMap: [
+         0,  1,  2,  3,  4,  5,  6,  7,
+         8,  9, 10, 11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20, 21, 22, 23,
+        24, 25, 26, 27, 28, 29, 30, 31
+      ]
+
