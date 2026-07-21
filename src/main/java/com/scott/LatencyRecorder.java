@@ -147,7 +147,10 @@ public final class LatencyRecorder {
      *  hot path stays allocation-free.
      * ================================================================ */
 
-    public double avgExecution() { return mean(executionNanos); }
+    public double avgExecution()      { return mean(executionNanos); }
+    public double avgQueueWait()      { return mean(queueWaitNanos); }
+    public double avgEndToEnd()       { return mean(endToEndNanos); }
+    public double avgSubmitOverhead() { return mean(submitOverheadNanos); }
 
     /* ================================================================
      *  Summary

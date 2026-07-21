@@ -27,9 +27,16 @@ public final class SharedOnlyDispatcher implements Dispatcher {
      * {@code afterExecute} override (no per-task allocation).
      */
     public SharedOnlyDispatcher(int workerCount, PinningConfig pinning, WorkerStats stats) {
+        this(workerCount, pinning, stats, null);
+    }
+
+    /** Full constructor with optional per-worker busy/idle tracker. */
+    public SharedOnlyDispatcher(int workerCount, PinningConfig pinning, WorkerStats stats,
+                                WorkerBusyIdleTracker busyIdle) {
         this.executor = new SharedExecutor(workerCount,
                 pinning == null ? PinningConfig.disabled() : pinning,
-                stats);
+                stats,
+                busyIdle);
     }
 
     @Override

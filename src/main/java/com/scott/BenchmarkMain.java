@@ -152,6 +152,17 @@ public class BenchmarkMain {
                 : null;
         WorkerStats[] workerStats = diagnostics == null ? null : diagnostics.workerStats();
 
+        // Per-worker busy vs. idle tracker. Enabled whenever diagnostics
+        // are enabled (top-level flag), independent of workerStats sub-
+        // flags — because busy/idle is the primary lens for the
+        // "shared vs sharded throughput/latency" investigation.
+        // Overhead when null: zero. Overhead when non-null: two
+        // System.nanoTime() calls + a few long ops per task (~50 ns
+        // total on modern x86; safe for 50 µs workloads).
+        final WorkerBusyIdleTracker busyIdle = diagCfg.enabled()
+                ? new WorkerBusyIdleTracker(global.workerCount())
+                : null;
+
         // Run directory + optional per-task attribution recorder are
         // created BEFORE the dispatcher so worker threads (especially
         // sharded workers, which start in the executor constructor)
@@ -170,13 +181,14 @@ public class BenchmarkMain {
         AttributionRecorder.setActive(attribution);
 
         Dispatcher dispatcher;
-        if (mode == BenchmarkMode.SHARDED && workerStats != null) {
+        if (mode == BenchmarkMode.SHARDED && (workerStats != null || busyIdle != null)) {
             dispatcher = new ShardedOnlyDispatcher(global.workerCount(), pinning, workerStats,
-                    global.shardedRouting());
-        } else if (mode == BenchmarkMode.SHARED && workerStats != null) {
+                    global.shardedRouting(), busyIdle);
+        } else if (mode == BenchmarkMode.SHARED && (workerStats != null || busyIdle != null)) {
             // Single-entry stats array — afterExecute() in the shared TPE
             // calls stats[0].onTaskCompleted(task) per measurement task.
-            dispatcher = new SharedOnlyDispatcher(global.workerCount(), pinning, workerStats[0]);
+            dispatcher = new SharedOnlyDispatcher(global.workerCount(), pinning,
+                    workerStats == null ? null : workerStats[0], busyIdle);
         } else {
             dispatcher = createDispatcher(mode, global.workerCount(), effectiveHybrid, pinning,
                     global.shardedRouting());
@@ -343,6 +355,12 @@ public class BenchmarkMain {
                     ? new int[dShardEnd.executor().getWorkerCount()] : null;
 
             session.markMeasurementStart(ctx);
+            // Optional cheap aggregate CPU utilization. One
+            // getProcessCpuTime() call at start + one at end of the
+            // measurement window (submit + shutdown + drain). Zero
+            // hot-path cost. Safely a no-op on non-HotSpot JVMs.
+            long cpuTimeStartNs = readProcessCpuTimeNs();
+            long wallTimeStartNs = System.nanoTime();
             boolean retentionRequiredByDiagnostics =
                     (mode == BenchmarkMode.SHARDED) && (diagCfg.shardLatencyCsv() || diagCfg.rawTaskLogging());
             boolean effectiveRetainCompletedTasks = global.retainCompletedTasks() || retentionRequiredByDiagnostics;
@@ -499,6 +517,69 @@ public class BenchmarkMain {
             appendTailDiagnostics(tailDiag, measurement, dispatcher, shardQueueAtSubmitEnd);
             summary.append(tailDiag);
 
+            // ---- Extended latency summary (mean + p50/p95/p99 for
+            //      queue-wait and end-to-end). p99 is already reported
+            //      elsewhere; this consolidates the four numbers per
+            //      metric for shared vs. sharded comparison. ----
+            summary.append('\n').append("=== Latency: overall averages ===").append('\n');
+            summary.append(String.format("queueWaitMs.avg=%.3f%n",  overall.avgQueueWait()  / 1_000_000.0));
+            summary.append(String.format("queueWaitMs.p50=%.3f%n",  overall.p50QueueWait()  / 1_000_000.0));
+            summary.append(String.format("queueWaitMs.p95=%.3f%n",  overall.p95QueueWait()  / 1_000_000.0));
+            summary.append(String.format("queueWaitMs.p99=%.3f%n",  overall.p99QueueWait()  / 1_000_000.0));
+            summary.append(String.format("endToEndMs.avg=%.3f%n",   overall.avgEndToEnd()   / 1_000_000.0));
+            summary.append(String.format("endToEndMs.p50=%.3f%n",   overall.p50EndToEnd()   / 1_000_000.0));
+            summary.append(String.format("endToEndMs.p95=%.3f%n",   overall.p95EndToEnd()   / 1_000_000.0));
+            summary.append(String.format("endToEndMs.p99=%.3f%n",   overall.p99EndToEnd()   / 1_000_000.0));
+
+            // ---- Benchmark completion accounting (explicit) ----
+            // completedTasks:
+            //   SHARDED = sum of ShardedExecutor.getProcessedCounts() (all phases)
+            //   SHARED  = SharedExecutor.getCompletedTaskCount()      (all phases)
+            //   Includes warmup + measurement (executor lifetime).
+            long completedTasksAllPhases = -1L;
+            if (dispatcher instanceof ShardedOnlyDispatcher dS) {
+                long sum = 0L;
+                for (long v : dS.executor().getProcessedCounts()) sum += v;
+                completedTasksAllPhases = sum;
+            } else if (dispatcher instanceof SharedOnlyDispatcher dSh) {
+                completedTasksAllPhases = dSh.executor().getCompletedTaskCount();
+            }
+            long cpuTimeEndNs = readProcessCpuTimeNs();
+            long wallTimeEndNs = System.nanoTime();
+            long wallSpanNs = wallTimeEndNs - wallTimeStartNs;
+            long cpuSpanNs  = (cpuTimeStartNs >= 0 && cpuTimeEndNs >= 0)
+                    ? (cpuTimeEndNs - cpuTimeStartNs) : -1L;
+            int  cores      = Runtime.getRuntime().availableProcessors();
+            double procCpuUtilization = (cpuSpanNs < 0 || wallSpanNs <= 0)
+                    ? Double.NaN
+                    : (double) cpuSpanNs / ((double) wallSpanNs * cores);
+
+            summary.append('\n').append("=== Benchmark Completion ===").append('\n');
+            summary.append(String.format("completion.submittedTasks=%d%n", measurement.submitted()));
+            summary.append(String.format("completion.completedTasksAllPhases=%d%n", completedTasksAllPhases));
+            summary.append(String.format("completion.submitDurationSeconds=%.6f%n", submitSecs));
+            summary.append(String.format("completion.shutdownDurationSeconds=%.6f%n", shutdownSecs));
+            summary.append(String.format("completion.taskDrainDurationSeconds=%.6f%n", drainSecs));
+            summary.append(String.format("completion.totalDurationSeconds=%.6f%n", totalSecs));
+            summary.append(String.format("completion.wallClockWindowSeconds=%.6f%n",
+                    wallSpanNs / 1_000_000_000.0));
+            summary.append("completion.throughputFormula=submitted / totalDurationSeconds " +
+                    "(= submitted / (submit + shutdown + drain))\n");
+            summary.append(String.format("completion.submittedPerSecond=%.1f%n", submittedPerSecond));
+            summary.append(String.format("completion.completedPerSecond=%.1f%n", completedPerSecond));
+            if (Double.isNaN(procCpuUtilization)) {
+                summary.append("completion.processCpuUtilization=unavailable\n");
+            } else {
+                summary.append(String.format(
+                        "completion.processCpuUtilization=%.4f  (cpuTimeNs=%d, wallNs=%d, cores=%d)%n",
+                        procCpuUtilization, cpuSpanNs, wallSpanNs, cores));
+            }
+
+            // ---- Per-worker busy/idle block (both SHARED and SHARDED) ----
+            if (busyIdle != null) {
+                busyIdle.appendSummary(summary);
+            }
+
             // Optional diagnostics block — SHARDED and SHARED, opt-in
             // via diagnostics.enabled.
             //
@@ -563,7 +644,7 @@ public class BenchmarkMain {
                         runDir.resolve("task_execution_times.csv"));
             }
 
-            Path summaryPath = runDir.resolve("summary_sharded.txt");
+            Path summaryPath = runDir.resolve("summary_" + mode.name().toLowerCase() + ".txt");
             Files.writeString(summaryPath, summary.toString());
 
             System.out.printf("  Measurement done : %,d tasks%n", measurement.submitted());
@@ -1336,5 +1417,22 @@ public class BenchmarkMain {
             }
         }
         throw new IllegalArgumentException("Missing required argument: --config=<path-to-yaml>");
+    }
+    /**
+     * Reads process CPU time (ns) via {@code com.sun.management.OperatingSystemMXBean}.
+     * Returns -1 on any failure (non-HotSpot JVM, sandboxed env, etc.).
+     * Called at most twice per run (measurement start / end) — zero
+     * hot-path cost.
+     */
+    private static long readProcessCpuTimeNs() {
+        try {
+            java.lang.management.OperatingSystemMXBean bean =
+                    java.lang.management.ManagementFactory.getOperatingSystemMXBean();
+            if (bean instanceof com.sun.management.OperatingSystemMXBean sun) {
+                long v = sun.getProcessCpuTime();
+                return v < 0 ? -1L : v;
+            }
+        } catch (Throwable ignore) { /* fall through */ }
+        return -1L;
     }
 }

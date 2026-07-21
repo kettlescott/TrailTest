@@ -60,6 +60,9 @@ final class ShardedWorker implements Runnable {
      */
     private final WorkerStats stats;
 
+    /** Optional per-worker busy/idle tracker; null when diagnostics disabled. */
+    private final WorkerBusyIdleTracker busyIdle;
+
     /**
      * Number of tasks this worker has executed.  Only written by the
      * owning worker thread and read after the thread has terminated,
@@ -122,12 +125,24 @@ final class ShardedWorker implements Runnable {
                   boolean enablePinning,
                   int coreId,
                   WorkerStats stats) {
+        this(workerId, localQueue, shutdown, enablePinning, coreId, stats, null);
+    }
+
+    /** Full constructor with optional per-worker busy/idle tracker. */
+    ShardedWorker(int workerId,
+                  LinkedBlockingQueue<Task> localQueue,
+                  AtomicBoolean shutdown,
+                  boolean enablePinning,
+                  int coreId,
+                  WorkerStats stats,
+                  WorkerBusyIdleTracker busyIdle) {
         this.workerId      = workerId;
         this.localQueue    = localQueue;
         this.shutdown      = shutdown;
         this.enablePinning = enablePinning;
         this.coreId        = coreId;
         this.stats         = stats;
+        this.busyIdle      = busyIdle;
     }
 
     @Override
@@ -206,11 +221,13 @@ final class ShardedWorker implements Runnable {
                 // that records into WorkerStats BEFORE onComplete fires the
                 // permit release. This eliminates the diagnostics/drain
                 // race without any extra synchronisation.
+                if (busyIdle != null) busyIdle.beforeTask(workerId, System.nanoTime());
                 if (stats != null) {
                     task.runWithBeforeComplete(stats);
                 } else {
                     task.run();
                 }
+                if (busyIdle != null) busyIdle.afterTask(workerId, System.nanoTime());
                 processedCount++;
                 if (task.isMeasurement()) {
                     measurementProcessedCount++;

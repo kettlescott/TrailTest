@@ -167,12 +167,26 @@ public final class ShardedExecutor implements BenchmarkExecutor {
      * Routing-aware constructor. {@code routing} controls how {@code taskId}
      * is mapped to a shard at submit time (see {@link ShardedRoutingConfig}).
      */
-    @SuppressWarnings("unchecked")
     public ShardedExecutor(int workerCount,
                            boolean enablePinning,
                            int[] coreMap,
                            WorkerStats[] workerStats,
                            ShardedRoutingConfig routing) {
+        this(workerCount, enablePinning, coreMap, workerStats, routing, null);
+    }
+
+    /**
+     * Full constructor with optional {@link WorkerBusyIdleTracker}.
+     * When {@code busyIdle == null} the worker's hot-path branch is a
+     * null-check that the JIT elides.
+     */
+    @SuppressWarnings("unchecked")
+    public ShardedExecutor(int workerCount,
+                           boolean enablePinning,
+                           int[] coreMap,
+                           WorkerStats[] workerStats,
+                           ShardedRoutingConfig routing,
+                           WorkerBusyIdleTracker busyIdle) {
         if (enablePinning) {
             if (!CpuAffinity.isSupported()) {
                 throw new IllegalStateException(
@@ -216,7 +230,8 @@ public final class ShardedExecutor implements BenchmarkExecutor {
                     i, queues[i], shutdown,
                     enablePinning,
                     enablePinning ? this.coreMap[i] : -1,
-                    statsForWorker);
+                    statsForWorker,
+                    busyIdle);
 
             workers[i]       = worker;
             workerThreads[i] = new Thread(worker, "ShardedWorker-" + i);

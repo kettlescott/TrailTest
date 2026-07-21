@@ -77,6 +77,14 @@ public final class DiagnosticsCollector {
     private long[] prevSlowTotal;
     private long[] prevMaxBurst;
 
+    /* --- Per-queue sub-tick occupancy counters (run-lifetime totals) ---
+     * Updated once per 10 ms sub-tick by the sampler thread only,
+     * read after stop(). Answers: "what fraction of the run was
+     * queue[i] empty?" — a proxy for local starvation. */
+    private long[] tickTotal;   // total sub-ticks observed per queue
+    private long[] tickEmpty;   // sub-ticks where depth == 0
+    private long[] depthSum;    // sum of depth across all sub-ticks (for true avg)
+
     public DiagnosticsCollector(DiagnosticsConfig cfg, int workerCount, int expectedTotalTasksHint) {
         this(cfg, workerCount, workerCount, expectedTotalTasksHint);
     }
@@ -147,6 +155,9 @@ public final class DiagnosticsCollector {
         this.prevQwSum      = new long[workerCount];
         this.prevSlowTotal  = new long[workerCount];
         this.prevMaxBurst   = new long[workerCount];
+        this.tickTotal      = new long[queueCount];
+        this.tickEmpty      = new long[queueCount];
+        this.depthSum       = new long[queueCount];
         this.samplerRunning = true;
         this.samplerThread = new Thread(this::samplerLoop, "DiagnosticsSampler");
         this.samplerThread.setDaemon(true);
@@ -178,10 +189,14 @@ public final class DiagnosticsCollector {
         long windowEnd  = System.nanoTime() + intervalNanos;
         long nextSubTick = System.nanoTime();
         while (samplerRunning) {
-            // Sub-tick: refresh per-queue max depth.
+            // Sub-tick: refresh per-queue max depth AND accumulate
+            // run-lifetime occupancy stats (avg depth, empty fraction).
             for (int q = 0; q < queueCount; q++) {
                 int d = samplerProbe.queueDepth(q);
                 if (d > curMaxDepth[q]) curMaxDepth[q] = d;
+                tickTotal[q]++;
+                depthSum[q] += d;
+                if (d == 0) tickEmpty[q]++;
             }
 
             long now = System.nanoTime();
@@ -274,6 +289,10 @@ public final class DiagnosticsCollector {
             int nWindows = windowMaxDepth.size();
             double[] avgPerQueue = new double[queueCount];
             int[]    maxPerQueue = new int[queueCount];
+            double[] trueAvgPerQueue  = new double[queueCount];
+            double[] emptyRatioArr    = new double[queueCount];
+            double[] nonEmptyRatioArr = new double[queueCount];
+            long aggTotal = 0L, aggEmpty = 0L, aggDepthSum = 0L;
             for (int q = 0; q < queueCount; q++) {
                 long sum = 0;
                 int  overallMax = 0;
@@ -288,12 +307,42 @@ public final class DiagnosticsCollector {
                 int p95 = percentileInt(perWin, 95);
                 avgPerQueue[q] = avg;
                 maxPerQueue[q] = overallMax;
+
+                // True-average depth + empty ratio from 10 ms sub-tick
+                // samples (much finer-grained than the per-window max).
+                long tt = tickTotal == null ? 0L : tickTotal[q];
+                long te = tickEmpty == null ? 0L : tickEmpty[q];
+                long ds = depthSum  == null ? 0L : depthSum[q];
+                double trueAvg = tt == 0L ? 0.0 : (double) ds / tt;
+                double emptyR  = tt == 0L ? 0.0 : (double) te / tt;
+                trueAvgPerQueue[q]  = trueAvg;
+                emptyRatioArr[q]    = emptyR;
+                nonEmptyRatioArr[q] = 1.0 - emptyR;
+                aggTotal    += tt;
+                aggEmpty    += te;
+                aggDepthSum += ds;
+
                 sb.append(String.format(
-                        "shard[%d].avgQueueDepth=%.2f, maxQueueDepth=%d, p95QueueDepth=%d  (samples=%d windows)%n",
-                        q, avg, overallMax, p95, nWindows));
+                        "shard[%d].avgQueueDepth=%.2f, maxQueueDepth=%d, p95QueueDepth=%d, "
+                        + "trueAvgDepth=%.3f, emptyRatio=%.4f, nonEmptyRatio=%.4f  "
+                        + "(windows=%d, subTicks=%d)%n",
+                        q, avg, overallMax, p95, trueAvg, emptyR, 1.0 - emptyR, nWindows, tt));
             }
             sb.append(String.format("avgQueueDepth.maxOverMean=%.3f%n", maxOverMean(avgPerQueue)));
             sb.append(String.format("maxQueueDepth.maxOverMean=%.3f%n", maxOverMean(toDoubles(maxPerQueue))));
+
+            // Aggregate summary across shards.
+            double aggEmptyR = aggTotal == 0L ? 0.0 : (double) aggEmpty / aggTotal;
+            double aggAvgD   = aggTotal == 0L ? 0.0 : (double) aggDepthSum / aggTotal;
+            sb.append(String.format(
+                    "aggregate.trueAvgDepth=%.3f, emptyRatio=%.4f, nonEmptyRatio=%.4f, subTicks=%d%n",
+                    aggAvgD, aggEmptyR, 1.0 - aggEmptyR, aggTotal));
+            // Cross-shard imbalance on the two new metrics.
+            sb.append(String.format("trueAvgDepth.maxOverMean=%.3f%n", maxOverMean(trueAvgPerQueue)));
+            sb.append(String.format("emptyRatio.min=%.4f, max=%.4f%n",
+                    minOf(emptyRatioArr), maxOf(emptyRatioArr)));
+            sb.append(String.format("nonEmptyRatio.min=%.4f, max=%.4f%n",
+                    minOf(nonEmptyRatioArr), maxOf(nonEmptyRatioArr)));
         }
 
         // ---- Imbalance block ----
@@ -479,6 +528,20 @@ public final class DiagnosticsCollector {
         for (double v : vals) { sum += v; if (v > mx) mx = v; }
         double mean = sum / vals.length;
         return mean == 0 ? 0.0 : mx / mean;
+    }
+
+    private static double minOf(double[] vals) {
+        if (vals.length == 0) return 0.0;
+        double m = Double.POSITIVE_INFINITY;
+        for (double v : vals) if (v < m) m = v;
+        return m;
+    }
+
+    private static double maxOf(double[] vals) {
+        if (vals.length == 0) return 0.0;
+        double m = Double.NEGATIVE_INFINITY;
+        for (double v : vals) if (v > m) m = v;
+        return m;
     }
 
     private static double[] toDoubles(int[] a) {

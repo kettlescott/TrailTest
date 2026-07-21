@@ -36,9 +36,19 @@ public final class ShardedOnlyDispatcher implements Dispatcher {
                                  PinningConfig pinning,
                                  WorkerStats[] workerStats,
                                  ShardedRoutingConfig routing) {
+        this(workerCount, pinning, workerStats, routing, null);
+    }
+
+    /** Full constructor with optional per-worker busy/idle tracker. */
+    public ShardedOnlyDispatcher(int workerCount,
+                                 PinningConfig pinning,
+                                 WorkerStats[] workerStats,
+                                 ShardedRoutingConfig routing,
+                                 WorkerBusyIdleTracker busyIdle) {
         PinningConfig p = pinning == null ? PinningConfig.disabled() : pinning;
         this.executor = new ShardedExecutor(workerCount, p.enabled(), p.coreMap(), workerStats,
-                routing == null ? ShardedRoutingConfig.defaults() : routing);
+                routing == null ? ShardedRoutingConfig.defaults() : routing,
+                busyIdle);
     }
 
     @Override

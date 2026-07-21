@@ -29,6 +29,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class SharedExecutor implements BenchmarkExecutor {
 
+    /**
+     * Thread-local logical worker index for pool threads. Set once
+     * inside {@link DeterministicThreadFactory} when the thread starts,
+     * read by {@link WorkerBusyIdleTracker}-aware TPE hooks. Zero cost
+     * when busy/idle tracking is disabled (the value is set anyway but
+     * never read).
+     */
+    static final ThreadLocal<Integer> SHARED_WORKER_ID = new ThreadLocal<>();
+
     private final ThreadPoolExecutor executor;
     private final BlockingQueue<Runnable> workQueue;
 
@@ -80,25 +89,51 @@ public final class SharedExecutor implements BenchmarkExecutor {
      * {@code poolSize} tasks and is statistically irrelevant.
      */
     public SharedExecutor(int poolSize, PinningConfig pinning, WorkerStats stats) {
+        this(poolSize, pinning, stats, null);
+    }
+
+    /**
+     * Full constructor. {@code stats} and {@code busyIdle} may each be
+     * null independently. When {@code busyIdle != null}, {@code beforeExecute}
+     * and {@code afterExecute} on the pool sample {@code System.nanoTime()}
+     * to attribute per-worker wall-clock time to busy vs. idle. Overhead
+     * per task: two {@code nanoTime()} + a handful of long ops per hook.
+     */
+    public SharedExecutor(int poolSize, PinningConfig pinning, WorkerStats stats,
+                          WorkerBusyIdleTracker busyIdle) {
         this.workQueue = new LinkedBlockingQueue<>();
         this.taskList  = BenchmarkFlags.DEBUG ? new ArrayList<>() : null;
-        if (stats == null) {
+        if (stats == null && busyIdle == null) {
             this.executor = new ThreadPoolExecutor(
                     poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
                     workQueue,
                     new DeterministicThreadFactory(pinning));
         } else {
+            final WorkerStats statsF = stats;
+            final WorkerBusyIdleTracker bi = busyIdle;
             // Subclass override is the JDK-blessed way to observe per-task
-            // completion on the worker thread without wrapping Runnables.
+            // execution on the worker thread without wrapping Runnables.
             this.executor = new ThreadPoolExecutor(
                     poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
                     workQueue,
-                    new DeterministicThreadFactory(pinning)) {
+                    new DeterministicThreadFactory(pinning, busyIdle)) {
                 @Override
-                protected void afterExecute(Runnable r, Throwable t) {
-                    super.afterExecute(r, t);
-                    if (r instanceof Task task) {
-                        stats.onTaskCompleted(task);
+                protected void beforeExecute(Thread t, Runnable r) {
+                    super.beforeExecute(t, r);
+                    if (bi != null) {
+                        Integer wid = SHARED_WORKER_ID.get();
+                        if (wid != null) bi.beforeTask(wid, System.nanoTime());
+                    }
+                }
+                @Override
+                protected void afterExecute(Runnable r, Throwable th) {
+                    super.afterExecute(r, th);
+                    if (bi != null) {
+                        Integer wid = SHARED_WORKER_ID.get();
+                        if (wid != null) bi.afterTask(wid, System.nanoTime());
+                    }
+                    if (statsF != null && r instanceof Task task) {
+                        statsF.onTaskCompleted(task);
                     }
                 }
             };
@@ -160,6 +195,11 @@ public final class SharedExecutor implements BenchmarkExecutor {
         return executor.getCorePoolSize();
     }
 
+    /** Total tasks completed by the pool (all phases). Cheap wrapper over TPE. */
+    public long getCompletedTaskCount() {
+        return executor.getCompletedTaskCount();
+    }
+
     /**
      * Returns the number of measurement-phase tasks submitted.
      */
@@ -213,13 +253,19 @@ public final class SharedExecutor implements BenchmarkExecutor {
     private static final class DeterministicThreadFactory implements ThreadFactory {
         private final AtomicInteger counter = new AtomicInteger(0);
         private final PinningConfig pinning;
+        private final WorkerBusyIdleTracker busyIdle;
 
         DeterministicThreadFactory() {
-            this(PinningConfig.disabled());
+            this(PinningConfig.disabled(), null);
         }
 
         DeterministicThreadFactory(PinningConfig pinning) {
+            this(pinning, null);
+        }
+
+        DeterministicThreadFactory(PinningConfig pinning, WorkerBusyIdleTracker busyIdle) {
             this.pinning = (pinning == null) ? PinningConfig.disabled() : pinning;
+            this.busyIdle = busyIdle;
         }
 
         @Override
@@ -235,6 +281,12 @@ public final class SharedExecutor implements BenchmarkExecutor {
             // startup. When attribution is disabled the registration
             // is a single static volatile read + null check.
             Runnable body = () -> {
+                // Install logical worker id for TPE beforeExecute/afterExecute
+                // hooks (busy/idle tracker). Set once per worker thread.
+                SHARED_WORKER_ID.set(workerIdx);
+                if (busyIdle != null) {
+                    busyIdle.workerStarted(workerIdx, System.nanoTime());
+                }
                 if (doPin) {
                     try {
                         CpuAffinity.pinCurrentThreadToCore(coreId);
