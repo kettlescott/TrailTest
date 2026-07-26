@@ -155,7 +155,7 @@ Results appear in:
 for cfg in A B C D; do
   echo "=== Variant $cfg ===" >&2
   grep -E "^(shardedRouting|workloadSeed|blackhole|retainCompleted)" \
-    results/sharded_mem_artifact_${cfg}_*/summary_sharded.txt
+    results/sharded_mem_artifact_${cfg}_*/summary_sharded50.txt
 done
 ```
 

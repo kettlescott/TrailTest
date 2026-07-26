@@ -54,4 +54,3 @@ benchmarks_sharded_mem_artifact_D.yaml
 task_attribution_cpu.csv
 task_attribution_memory.csv
 
-compare/

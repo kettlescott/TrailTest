@@ -45,13 +45,29 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class ShardedWorker implements Runnable {
 
     private final int workerId;
+    /**
+     * When {@code selfAllocateQueue == false} this is the pre-created queue
+     * passed by the executor (legacy path). When {@code true}, this field
+     * is null and the queue is allocated by {@link #run()} AFTER pinning
+     * so its head/tail cache lines are first-touched on the worker's
+     * NUMA node. Published to {@link #publishedQueue} + latch.
+     */
     private final LinkedBlockingQueue<Task> localQueue;
     private final AtomicBoolean shutdown;
 
     /* ---- pinning configuration (immutable after construction) ---- */
 
     private final boolean enablePinning;
-    private final int coreId;    // meaningful only when enablePinning == true
+    private final int coreId;    // exact-CPU mode: single logical CPU id (or -1)
+    /** NUMA-node-mask mode: full CPU list of the assigned node; null when unused. */
+    private final int[] cpuMask;
+    /** Node id when in NUMA-node-mask mode; -1 otherwise. Purely for logging. */
+    private final int  numaNodeId;
+
+    /* ---- first-touch handoff (only used when selfAllocateQueue == true) ---- */
+    private final boolean selfAllocateQueue;
+    private final java.util.concurrent.atomic.AtomicReference<LinkedBlockingQueue<Task>> publishedQueue;
+    private final java.util.concurrent.CountDownLatch queueReadyLatch;
 
     /**
      * Optional per-worker diagnostics sink. Null when diagnostics are
@@ -136,13 +152,55 @@ final class ShardedWorker implements Runnable {
                   int coreId,
                   WorkerStats stats,
                   WorkerBusyIdleTracker busyIdle) {
-        this.workerId      = workerId;
-        this.localQueue    = localQueue;
-        this.shutdown      = shutdown;
-        this.enablePinning = enablePinning;
-        this.coreId        = coreId;
-        this.stats         = stats;
-        this.busyIdle      = busyIdle;
+        this(workerId, localQueue, shutdown, enablePinning, coreId, stats, busyIdle,
+             /*cpuMask*/ null, /*numaNodeId*/ -1,
+             /*selfAllocateQueue*/ false, /*publishedQueue*/ null, /*queueReadyLatch*/ null);
+    }
+
+    /**
+     * Full NUMA-aware constructor.
+     *
+     * <p>Two independent capabilities:
+     * <ol>
+     *   <li>{@code cpuMask != null} → NUMA-node-mask pinning:
+     *       {@link CpuAffinity#pinCurrentThreadToCpuSet(int[])} with
+     *       every CPU on the assigned node. Overrides {@code coreId}
+     *       when non-null. Set {@code coreId=-1} in that case.</li>
+     *   <li>{@code selfAllocateQueue == true} → worker allocates its own
+     *       {@link LinkedBlockingQueue} AFTER pinning, publishes it via
+     *       {@code publishedQueue}, and counts down {@code queueReadyLatch}.
+     *       This first-touches the queue head/tail cache lines on the
+     *       worker's NUMA node.
+     *       Note: {@link LinkedBlockingQueue} still allocates a Node per
+     *       {@code offer()} on the PRODUCER thread, so per-task Node
+     *       payloads remain producer-node-local — not fixable without
+     *       switching queue implementations.</li>
+     * </ol>
+     */
+    ShardedWorker(int workerId,
+                  LinkedBlockingQueue<Task> localQueue,
+                  AtomicBoolean shutdown,
+                  boolean enablePinning,
+                  int coreId,
+                  WorkerStats stats,
+                  WorkerBusyIdleTracker busyIdle,
+                  int[] cpuMask,
+                  int numaNodeId,
+                  boolean selfAllocateQueue,
+                  java.util.concurrent.atomic.AtomicReference<LinkedBlockingQueue<Task>> publishedQueue,
+                  java.util.concurrent.CountDownLatch queueReadyLatch) {
+        this.workerId          = workerId;
+        this.localQueue        = localQueue;
+        this.shutdown          = shutdown;
+        this.enablePinning     = enablePinning;
+        this.coreId            = coreId;
+        this.stats             = stats;
+        this.busyIdle          = busyIdle;
+        this.cpuMask           = cpuMask;
+        this.numaNodeId        = numaNodeId;
+        this.selfAllocateQueue = selfAllocateQueue;
+        this.publishedQueue    = publishedQueue;
+        this.queueReadyLatch   = queueReadyLatch;
     }
 
     @Override
@@ -161,11 +219,20 @@ final class ShardedWorker implements Runnable {
         // normal benchmark runs.
         if (enablePinning) {
             try {
-                CpuAffinity.pinCurrentThreadToCore(coreId);
+                if (cpuMask != null) {
+                    // NUMA-node-mask affinity: worker may migrate among all
+                    // CPUs of the assigned node, but not across nodes.
+                    CpuAffinity.pinCurrentThreadToCpuSet(cpuMask);
+                } else {
+                    CpuAffinity.pinCurrentThreadToCore(coreId);
+                }
                 pinned = true;
                 if (BenchmarkFlags.DEBUG) {
-                    System.out.printf("[%s] worker-%d pinned to core %d  (affinity mask: %s)%n",
-                            Thread.currentThread().getName(), workerId, coreId,
+                    System.out.printf("[%s] worker-%d pinned mode=%s coreId=%d nodeId=%d "
+                                    + "cpuMaskSize=%d (affinity mask: %s)%n",
+                            Thread.currentThread().getName(), workerId,
+                            (cpuMask != null ? "NUMA_NODE" : "EXACT_CPU"),
+                            coreId, numaNodeId, (cpuMask != null ? cpuMask.length : 1),
                             CpuAffinity.getCurrentAffinityMask());
                 }
             } catch (Throwable e) {
@@ -173,8 +240,47 @@ final class ShardedWorker implements Runnable {
                 // the worker with the JVM's default affinity mask.
                 pinned = false;
                 pinningError = e.getMessage();
-                System.err.printf("[ShardedWorker-%d] WARN: failed to pin to core %d: %s%n",
-                        workerId, coreId, e.getMessage());
+                System.err.printf("[ShardedWorker-%d] WARN: failed to pin (mode=%s coreId=%d nodeId=%d): %s%n",
+                        workerId, (cpuMask != null ? "NUMA_NODE" : "EXACT_CPU"),
+                        coreId, numaNodeId, e.getMessage());
+            }
+        }
+
+        // ---- First-touch: allocate the shard queue HERE (on the worker
+        // thread, after pinning) so its head/tail cache lines land on the
+        // worker's NUMA node. Publish to the executor via atomic ref +
+        // latch; the executor constructor waits for all latches before
+        // returning, guaranteeing the queue is visible before submit().
+        //
+        // LIMITATION: LinkedBlockingQueue allocates a Node per offer() on
+        // the PRODUCER thread. Per-task Node payloads therefore remain
+        // producer-node-local. Only the queue structure itself and the
+        // head/tail pointers are worker-local after this. Switching to a
+        // pre-allocated ring buffer would fix Node locality too, but is
+        // out of scope here. ----
+        LinkedBlockingQueue<Task> effectiveQueue;
+        if (selfAllocateQueue) {
+            effectiveQueue = new LinkedBlockingQueue<>();
+            publishedQueue.set(effectiveQueue);
+            queueReadyLatch.countDown();
+            // Report the actual CPU where the queue was born.
+            int cpuAtAlloc = safeCurrentCpu();
+            int nodeAtAlloc = NumaTopology.get().nodeOfCpu(cpuAtAlloc);
+            System.out.printf("[ShardedWorker-%d] queue allocated on cpu=%d node=%d (target node=%d)%n",
+                    workerId, cpuAtAlloc, nodeAtAlloc, numaNodeId);
+            if (numaNodeId >= 0 && nodeAtAlloc >= 0 && nodeAtAlloc != numaNodeId) {
+                System.err.printf("[ShardedWorker-%d] WARN: queue first-touch on node %d but target was node %d%n",
+                        workerId, nodeAtAlloc, numaNodeId);
+            }
+        } else {
+            effectiveQueue = localQueue;
+            // Validation log even in legacy path so we can compare mask outcomes.
+            if (enablePinning) {
+                int cpuNow = safeCurrentCpu();
+                int nodeNow = NumaTopology.get().nodeOfCpu(cpuNow);
+                System.out.printf("[ShardedWorker-%d] started on cpu=%d node=%d mode=%s%n",
+                        workerId, cpuNow, nodeNow,
+                        (cpuMask != null ? "NUMA_NODE" : "EXACT_CPU"));
             }
         }
 
@@ -197,16 +303,16 @@ final class ShardedWorker implements Runnable {
         try {
             while (true) {
                 // Fast exit: shutdown requested and nothing left to drain.
-                if (shutdown.get() && localQueue.isEmpty()) {
+                if (shutdown.get() && effectiveQueue.isEmpty()) {
                     return;
                 }
 
                 final Task task;
                 try {
-                    task = localQueue.take();
+                    task = effectiveQueue.take();
                 } catch (InterruptedException e) {
                     // Woken by interrupt — re-check shutdown + drain condition.
-                    if (shutdown.get() && localQueue.isEmpty()) {
+                    if (shutdown.get() && effectiveQueue.isEmpty()) {
                         return;
                     }
                     // Still have queued work or not yet shutting down — keep going.
@@ -216,11 +322,6 @@ final class ShardedWorker implements Runnable {
                 // Task.run() records start/finish timestamps, executes the
                 // workload, and counts down the batch latch — identical to
                 // the SharedExecutor code path via ThreadPoolExecutor.
-                //
-                // When diagnostics are enabled, route through the variant
-                // that records into WorkerStats BEFORE onComplete fires the
-                // permit release. This eliminates the diagnostics/drain
-                // race without any extra synchronisation.
                 if (busyIdle != null) busyIdle.beforeTask(workerId, System.nanoTime());
                 if (stats != null) {
                     task.runWithBeforeComplete(stats);
@@ -237,6 +338,23 @@ final class ShardedWorker implements Runnable {
             if (_attrib != null) {
                 _attrib.closePerfFdsForCurrentThread();
             }
+            // NUMA validation: end-of-run CPU/node so we can check for
+            // any cross-node migration during the ~60 s measurement.
+            if (enablePinning) {
+                int cpuEnd  = safeCurrentCpu();
+                int nodeEnd = NumaTopology.get().nodeOfCpu(cpuEnd);
+                System.out.printf("[ShardedWorker-%d] exit on cpu=%d node=%d (target node=%d) processed=%d%n",
+                        workerId, cpuEnd, nodeEnd, numaNodeId, processedCount);
+            }
+        }
+    }
+
+    /** Best-effort sched_getcpu via PerfBridge; returns -1 if unavailable. */
+    private static int safeCurrentCpu() {
+        try {
+            return com.scott.perf.PerfBridge.currentCpu();
+        } catch (Throwable t) {
+            return -1;
         }
     }
 

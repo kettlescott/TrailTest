@@ -1,0 +1,22 @@
+# started on Sat Jul 25 12:41:56 2026
+
+
+ Performance counter stats for process id '804353':
+
+ 6,691,828,370,097      cycles                           #    3.440 GHz                         (25.21%)
+ 8,350,354,503,963      instructions                     #    1.25  insn per cycle              (26.76%)
+   225,356,076,155      branches                         #  115.838 M/sec                       (26.38%)
+       691,003,737      branch-misses                    #    0.31% of all branches             (25.94%)
+    14,431,919,547      cache-references                 #    7.418 M/sec                       (25.70%)
+     1,628,462,267      cache-misses                     #   11.28% of all cache refs           (25.37%)
+     5,369,074,051      LLC-loads                        #    2.760 M/sec                       (21.45%)
+       975,424,377      LLC-load-misses                  #   18.17% of all LL-cache accesses    (21.42%)
+         7,238,575      context-switches                 #    3.721 K/sec                     
+             2,755      cpu-migrations                   #    1.416 /sec                      
+           468,487      page-faults                      #  240.812 /sec                      
+      1,945,445.52 msec task-clock                       #   31.659 CPUs utilized             
+       210,407,633      mem_load_l3_miss_retired.local_dram #  108.154 K/sec                       (21.44%)
+       536,853,682      mem_load_l3_miss_retired.remote_dram #  275.954 K/sec                       (21.47%)
+
+      61.449856818 seconds time elapsed
+

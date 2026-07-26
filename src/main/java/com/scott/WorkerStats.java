@@ -75,7 +75,7 @@ final class WorkerStats {
      * <p>Warmup tasks are filtered out — only measurement tasks
      * contribute to any diagnostic counter, mirroring the main
      * latency-recorder behaviour so the diagnostics block in
-     * {@code summary_sharded.txt} describes the measurement window only.
+     * {@code summary_sharded50.txt} describes the measurement window only.
      */
     void onTaskCompleted(Task task) {
         if (!task.isMeasurement()) {

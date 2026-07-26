@@ -1,0 +1,8 @@
+cycles               2647791282908
+instructions         3515184548258
+cache-references     1625455133
+cache-misses         658733729
+LLC-loads            592580267
+LLC-load-misses      246851563
+context-switches     10008122
+cpu-migrations       3830

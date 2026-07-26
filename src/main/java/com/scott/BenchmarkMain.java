@@ -507,11 +507,11 @@ public class BenchmarkMain {
 
             summary.append(recorder.compactByKind());
 
-            // Tail / drain diagnostic — emitted to BOTH summary_sharded.txt and
+            // Tail / drain diagnostic — emitted to BOTH summary_sharded50.txt and
             // stdout, byte-identical formatting via appendTailDiagnostics.
             // Placed AFTER the standard latency summary and BEFORE the
             // per-worker / queue-depth diagnostics sections so the
-            // ordering in summary_sharded.txt mirrors what an operator sees on
+            // ordering in summary_sharded50.txt mirrors what an operator sees on
             // the console.
             StringBuilder tailDiag = new StringBuilder();
             appendTailDiagnostics(tailDiag, measurement, dispatcher, shardQueueAtSubmitEnd);
@@ -578,6 +578,18 @@ public class BenchmarkMain {
             // ---- Per-worker busy/idle block (both SHARED and SHARDED) ----
             if (busyIdle != null) {
                 busyIdle.appendSummary(summary);
+            }
+
+            // ---- Aggregate perf stat, per-task normalized (only when
+            //      profiling.perf.enablePerfStat=true). Reads the file
+            //      that PerfStatProfiler already produced, divides raw
+            //      counts by measurement submitted count, and appends a
+            //      block to summary. Uses the existing perf stat file
+            //      as sole source; no new abstraction, no new subprocess.
+            if (profiling != null && profiling.perf() != null && profiling.perf().perfStatEnabled()) {
+                Path perfStatPath = runDir.resolve(
+                        profiling.perf().perfStatFilenameOrDefault().replace("${runName}", run.name()));
+                appendPerfStatPerTask(summary, perfStatPath, measurement.submitted());
             }
 
             // Optional diagnostics block — SHARDED and SHARED, opt-in
@@ -704,7 +716,7 @@ public class BenchmarkMain {
             }
 
             // 7. DIAGNOSTIC: tail-latency / drain-accounting sanity check.
-            //    Same StringBuilder that was appended to summary_sharded.txt
+            //    Same StringBuilder that was appended to summary_sharded50.txt
             //    above — single formatting source, so console and file
             //    are byte-identical. Pure observation; touches no
             //    executor, queue, or timing field.
@@ -1308,7 +1320,7 @@ public class BenchmarkMain {
     /**
      * Appends the tail / drain diagnostic block to {@code out}. Single
      * formatting source so the section is byte-identical between
-     * stdout and {@code summary_sharded.txt}.
+     * stdout and {@code summary_sharded50.txt}.
      *
      * <p>See class-level notes for what this block reveals; the body
      * is purely additive observation (no field mutation, no timing).
@@ -1418,6 +1430,84 @@ public class BenchmarkMain {
         }
         throw new IllegalArgumentException("Missing required argument: --config=<path-to-yaml>");
     }
+    /**
+     * Reads a {@code <runName>.perf.stat.txt} file (produced by
+     * {@link com.scott.profiling.PerfStatProfiler} via the existing
+     * {@code perf stat -e ... -o file -p PID} mechanism) and appends a
+     * small per-task normalized block to {@code summary}. Reuses the
+     * existing perf-stat output as sole source; no new subprocess.
+     *
+     * <p>Format matches {@code perf stat} default: one event per line,
+     * {@code  <count>  <event-name>  [# comment]}. Unsupported events
+     * appear as {@code <not counted>} — treated as absent, matching
+     * how the existing bridge handles unavailable counters.
+     */
+    private static void appendPerfStatPerTask(StringBuilder summary, Path perfStatPath, long submittedTasks) {
+        if (perfStatPath == null || !Files.exists(perfStatPath)) return;
+        java.util.Map<String, Long> counts = new java.util.LinkedHashMap<>();
+        try {
+            java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+                    "^\\s*([\\d,\\.]+)\\s+([A-Za-z0-9_.\\-:]+).*$");
+            for (String line : Files.readAllLines(perfStatPath)) {
+                java.util.regex.Matcher m = p.matcher(line);
+                if (!m.matches()) continue;
+                String raw = m.group(1).replace(",", "").replace(".", "");
+                String name = m.group(2);
+                try { counts.put(name, Long.parseLong(raw)); } catch (NumberFormatException ignore) { }
+            }
+        } catch (IOException e) {
+            return;
+        }
+        if (counts.isEmpty()) return;
+
+        long submitted = Math.max(1L, submittedTasks);
+        long cycles = counts.getOrDefault("cycles", 0L);
+        long instr  = counts.getOrDefault("instructions", 0L);
+        long llcLM  = counts.getOrDefault("LLC-load-misses", 0L);
+        long mig    = counts.getOrDefault("cpu-migrations", 0L);
+        // Accept either the generic "numa_reads_addressed_to_*_dram" name
+        // (rare, arch-specific) or the standard Intel PEBS event that is
+        // present on Skylake / Cascade Lake / Ice Lake:
+        //   mem_load_l3_miss_retired.local_dram   (a.k.a. .remote_dram)
+        // Whichever is present in the perf.stat.txt file is used.
+        long local  = firstNonZero(counts,
+                "mem_load_l3_miss_retired.local_dram",
+                "numa_reads_addressed_to_local_dram");
+        long remote = firstNonZero(counts,
+                "mem_load_l3_miss_retired.remote_dram",
+                "numa_reads_addressed_to_remote_dram");
+        double ipc         = cycles == 0 ? 0.0 : (double) instr / cycles;
+        double remoteRatio = (local + remote) == 0L ? 0.0 : (double) remote / (local + remote);
+
+        summary.append('\n').append("=== Perf Stat (aggregate, per-task normalized) ===").append('\n');
+        summary.append(String.format("perfStat.cyclesPerTask=%.1f%n",           (double) cycles / submitted));
+        summary.append(String.format("perfStat.instructionsPerTask=%.1f%n",     (double) instr  / submitted));
+        summary.append(String.format("perfStat.ipc=%.3f%n",                     ipc));
+        summary.append(String.format("perfStat.cpuMigrationsPerTask=%.4f%n",    (double) mig    / submitted));
+        summary.append(String.format("perfStat.llcLoadMissesPerTask=%.2f%n",    (double) llcLM  / submitted));
+        summary.append(String.format("perfStat.localDramReadsPerTask=%.2f%n",   (double) local  / submitted));
+        summary.append(String.format("perfStat.remoteDramReadsPerTask=%.2f%n",  (double) remote / submitted));
+        summary.append(String.format("perfStat.remoteDramRatio=%.4f%n",         remoteRatio));
+        summary.append(String.format("perfStat.raw.cycles=%d, instructions=%d, llcLoadMisses=%d, "
+                + "localDram=%d, remoteDram=%d, cpuMigrations=%d%n",
+                cycles, instr, llcLM, local, remote, mig));
+        summary.append(String.format("perfStat.file=%s%n", perfStatPath));
+    }
+
+    /** Returns the first {@code counts[key]} that is > 0, else 0. Lets the
+     *  parser accept multiple spellings of the same hardware event across
+     *  perf/kernel/arch variants (e.g. Cascade Lake vs Ice Lake naming). */
+    private static long firstNonZero(java.util.Map<String, Long> counts, String... keys) {
+        for (String k : keys) {
+            Long v = counts.get(k);
+            if (v != null && v > 0L) return v;
+        }
+        // Fall back to whatever the first key holds even if zero, so raw
+        // counts still show up in the summary block.
+        Long v = counts.get(keys[0]);
+        return v == null ? 0L : v;
+    }
+
     /**
      * Reads process CPU time (ns) via {@code com.sun.management.OperatingSystemMXBean}.
      * Returns -1 on any failure (non-HotSpot JVM, sandboxed env, etc.).

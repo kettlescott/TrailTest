@@ -1,0 +1,144 @@
+global:
+  workerCount: 32
+  maxInflight: 32
+  seed: 3735928559
+  warmupSeconds: 10
+  measurementSeconds: 60
+  taskCount: 0
+
+workloads:
+  # Fixed CPU iteration count — bypasses runtime calibration so every
+  # run (shared / sharded) executes EXACTLY the same arithmetic per task.
+  # 96000 iters ≈ 300us wall on a Xeon Gold 6242 @ 2.8 GHz.
+  # Re-tune procedure:
+  #   1) run once with `targetMillis: <target>` (calibration mode)
+  #   2) read `cpuIterations[<entry>]=N (calibrated)` from summary.txt
+  #   3) paste N back here as cpuIterations
+  cpu_300us_32:
+    - { kind: CPU, cpuIterations: 96000, ratio: 1.0 }
+
+profiling:
+  enabled: true
+  control: api
+  settings: profile
+  # captureLocks at 100us: filters routine LinkedBlockingQueue park/unpark
+  # noise but still catches meaningful contention events. At 10us on a
+  # 50µs task workload the JFR balloons to multiple GB.
+  captureLocks: true
+  lockEventThreshold: 100us
+  start: beforeMeasurement
+  stop: afterMeasurement
+  filename: "${runName}.jfr"
+  startCommand: "JFR.start name=${runName} settings=${settings} filename=${outputFile}"
+  stopCommand: "JFR.stop name=${runName} filename=${outputFile}"
+
+  perf:
+    enabled: true
+    binary: perf
+    frequency: 99
+    clock: monotonic
+    callGraph: dwarf
+    mmapPages: 2048
+    extraArgs:
+      - "--no-buildid"
+      - "--no-buildid-cache"
+      - "-z"
+      - "-e"
+      - "cycles,instructions,cache-references,cache-misses,LLC-loads,LLC-load-misses"
+      - "-e"
+      - "context-switches,cpu-migrations"
+    filename: "${runName}.perf.data"
+
+    # ---- Aggregate perf stat (existing mechanism, event list extended
+    # with the two NUMA DRAM counters). Produces <runName>.perf.stat.txt.
+    # If a counter name is unsupported on this host, perf will report
+    # "<not counted>" for that line and the rest still work — no change
+    # to error handling required.
+    enablePerfStat: true
+    perfStatEvents:
+      - cycles
+      - instructions
+      - branches
+      - branch-misses
+      - cache-references
+      - cache-misses
+      - LLC-loads
+      - LLC-load-misses
+      - context-switches
+      - cpu-migrations
+      - page-faults
+      - task-clock
+      - mem_load_l3_miss_retired.local_dram
+      - mem_load_l3_miss_retired.remote_dram
+
+  asyncProfiler:
+    enabled: false
+    binary: /home/wangs100/test/async-profiler-4.0-linux-x64/bin/asprof
+    event: wall
+    interval: 1ms
+    format: jfr
+    filename: "${runName}.async.jfr"
+    extraArgs: []
+
+diagnostics:
+  enabled: true                  # enables per-worker busy/idle tracker,
+                                 # Latency-averages block, Benchmark
+                                 # Completion block, per-shard emptyRatio
+                                 # / trueAvgDepth, and Process CPU util.
+  perWorkerLatency: false
+  queueDepthByShard: true
+  windowSampling: true
+  windowCorrelation: true
+  windowSeconds: 1
+  slowExecutionMicros: 200
+
+  # MUST be false for high-throughput 300us / 60s runs: retains every
+  # Task object (~40M at 640k/s × 60s → >5 GB heap → OOM). Turn on only
+  # when measurementSeconds <= 5 or with a bounded taskCount.
+  shardLatencyCsv: false
+  shardWindowMillis: 100
+
+  rawTaskLogging: false
+  taskExecutionCsv: false
+
+attribution:
+  enabled: true
+  sampleRate: 0.01
+  outputCsv: ""
+  bufferCapacityPerWorker: 65536
+  perfEnabled: true
+  sampledPerfRate: 1.0
+  perfCounters:
+    - cycles
+    - instructions
+    - LLC-loads
+    - LLC-load-misses
+    - context-switches
+    - cpu-migrations
+
+runs:
+  # Baseline (no pinning). Enable together with numa_node_mask below
+  # to produce an A/B pair for the 300us workload.
+  - name: sharded_cpu_300us_32
+    mode: sharded
+    workload: cpu_300us_32
+    enabled: false
+    pinning:
+      enabled: false
+
+  # ================================================================
+  # NUMA experiment run. NO in-JVM thread affinity at all — `pinning`
+  # is disabled. NUMA behavior comes ONLY from the launch environment:
+  #   - `numactl` policy chosen on the command line
+  #   - `-XX:+UseNUMA` for GC-aware allocation
+  #   - Linux first-touch page placement
+  #
+  # This is deliberately symmetric to the baseline run above so the
+  # only variable between them is the launch command (see docs).
+  # ================================================================
+  - name: sharded_cpu_300us_32_numa_node_mask
+    mode: sharded
+    workload: cpu_300us_32
+    enabled: true
+    pinning:
+      enabled: false

@@ -26,7 +26,7 @@ done
 # Compare results
 echo "=== Knob values ===" >&2
 for cfg in A B C D; do
-  grep "shardedRouting\|workloadSeed\|blackhole" results/sharded_mem_artifact_${cfg}_*/summary_sharded.txt
+  grep "shardedRouting\|workloadSeed\|blackhole" results/sharded_mem_artifact_${cfg}_*/summary_sharded50.txt
 done
 
 echo "=== Shard p95 execution (ms) ===" >&2

@@ -463,7 +463,20 @@ public final class BenchmarkConfigLoader {
         } else if (cm != null) {
             throw new IllegalArgumentException(path + ".coreMap must be a list of integers");
         }
-        return new PinningConfig(enabled, coreMap);
+        // Optional NUMA-node-mask mode: `workerNodes: [0,0,...,1,1,...]`
+        // one node id per worker. When present it takes precedence over
+        // coreMap (see PinningConfig.mode()).
+        int[] workerNodes = null;
+        Object wn = map.get("workerNodes");
+        if (wn instanceof List<?> nlist) {
+            workerNodes = new int[nlist.size()];
+            for (int i = 0; i < nlist.size(); i++) {
+                workerNodes[i] = Integer.parseInt(String.valueOf(nlist.get(i)));
+            }
+        } else if (wn != null) {
+            throw new IllegalArgumentException(path + ".workerNodes must be a list of integers");
+        }
+        return new PinningConfig(enabled, coreMap, workerNodes);
     }
 
     /**

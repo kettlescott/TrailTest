@@ -177,39 +177,73 @@ public final class ShardedExecutor implements BenchmarkExecutor {
 
     /**
      * Full constructor with optional {@link WorkerBusyIdleTracker}.
-     * When {@code busyIdle == null} the worker's hot-path branch is a
-     * null-check that the JIT elides.
+     * Delegates to the NUMA-aware constructor with an {@code EXACT_CPU}
+     * pinning config so legacy callers keep working unchanged.
      */
-    @SuppressWarnings("unchecked")
     public ShardedExecutor(int workerCount,
                            boolean enablePinning,
                            int[] coreMap,
                            WorkerStats[] workerStats,
                            ShardedRoutingConfig routing,
                            WorkerBusyIdleTracker busyIdle) {
-        if (enablePinning) {
-            if (!CpuAffinity.isSupported()) {
-                throw new IllegalStateException(
-                        "CPU pinning was requested but CpuAffinity is not supported on this platform");
-            }
-            if (coreMap == null || coreMap.length == 0) {
+        this(workerCount,
+             enablePinning ? new PinningConfig(true, coreMap) : PinningConfig.disabled(),
+             workerStats, routing, busyIdle);
+    }
+
+    /**
+     * NUMA-aware constructor. When {@code pinning.mode() == NUMA_NODE}, each
+     * shard queue is first-touched by its own worker thread AFTER pinning
+     * (see {@link ShardedWorker}). {@code EXACT_CPU} and {@code DISABLED}
+     * modes use the legacy path (queues created by the caller thread).
+     */
+    @SuppressWarnings("unchecked")
+    public ShardedExecutor(int workerCount,
+                           PinningConfig pinning,
+                           WorkerStats[] workerStats,
+                           ShardedRoutingConfig routing,
+                           WorkerBusyIdleTracker busyIdle) {
+        PinningConfig eff = (pinning == null) ? PinningConfig.disabled() : pinning;
+        PinningConfig.Mode pm = eff.mode();
+        final boolean enablePinning = (pm != PinningConfig.Mode.DISABLED);
+
+        if (enablePinning && !CpuAffinity.isSupported()) {
+            throw new IllegalStateException(
+                    "CPU pinning was requested but CpuAffinity is not supported on this platform");
+        }
+
+        int[]   perWorkerCore    = null;
+        int[]   perWorkerNode    = null;
+        int[][] perWorkerCpuMask = null;
+        if (pm == PinningConfig.Mode.EXACT_CPU) {
+            int[] cm = eff.coreMap();
+            if (cm == null || cm.length == 0) {
                 throw new IllegalArgumentException(
-                        "coreMap must not be null or empty when pinning is enabled");
+                        "coreMap must not be null or empty for EXACT_CPU pinning");
             }
-            // Round-robin assignment: build a per-worker map of length
-            // workerCount by cycling through the source coreMap.  This
-            // also acts as a defensive copy so the caller cannot mutate
-            // the map later.
-            this.coreMap = new int[workerCount];
+            perWorkerCore = new int[workerCount];
             for (int i = 0; i < workerCount; i++) {
-                this.coreMap[i] = coreMap[i % coreMap.length];
+                perWorkerCore[i] = cm[i % cm.length];
             }
-        } else {
-            this.coreMap = null;
+        } else if (pm == PinningConfig.Mode.NUMA_NODE) {
+            int[] wn = eff.workerNodes();
+            if (wn == null || wn.length == 0) {
+                throw new IllegalArgumentException(
+                        "workerNodes must not be null or empty for NUMA_NODE pinning");
+            }
+            NumaTopology topo = NumaTopology.get();
+            perWorkerNode    = new int[workerCount];
+            perWorkerCpuMask = new int[workerCount][];
+            for (int i = 0; i < workerCount; i++) {
+                int nodeId = wn[i % wn.length];
+                perWorkerNode[i]    = nodeId;
+                perWorkerCpuMask[i] = topo.cpusOfNode(nodeId);
+            }
         }
 
         this.workerCount    = workerCount;
         this.pinningEnabled = enablePinning;
+        this.coreMap        = perWorkerCore;   // null for NUMA_NODE / DISABLED
         this.routing        = routing == null ? ShardedRoutingConfig.defaults() : routing;
         this.queues         = new LinkedBlockingQueue[workerCount];
         this.workerThreads  = new Thread[workerCount];
@@ -222,27 +256,69 @@ public final class ShardedExecutor implements BenchmarkExecutor {
                             + ") must equal workerCount (" + workerCount + ")");
         }
 
-        for (int i = 0; i < workerCount; i++) {
-            queues[i] = new LinkedBlockingQueue<>();
+        final boolean firstTouch = (pm == PinningConfig.Mode.NUMA_NODE);
+        java.util.concurrent.CountDownLatch queueReadyLatch =
+                firstTouch ? new java.util.concurrent.CountDownLatch(workerCount) : null;
+        @SuppressWarnings("rawtypes")
+        java.util.concurrent.atomic.AtomicReference[] pubQueues =
+                firstTouch ? new java.util.concurrent.atomic.AtomicReference[workerCount] : null;
 
+        for (int i = 0; i < workerCount; i++) {
             WorkerStats statsForWorker = workerStats == null ? null : workerStats[i];
+            LinkedBlockingQueue<Task> preAlloc = null;
+            java.util.concurrent.atomic.AtomicReference<LinkedBlockingQueue<Task>> pubRef = null;
+            if (firstTouch) {
+                pubRef = new java.util.concurrent.atomic.AtomicReference<>();
+                pubQueues[i] = pubRef;
+            } else {
+                preAlloc = new LinkedBlockingQueue<>();
+                queues[i] = preAlloc;
+            }
+
+            int coreArg = (pm == PinningConfig.Mode.EXACT_CPU) ? perWorkerCore[i] : -1;
+            int[] cpuMaskArg = firstTouch ? perWorkerCpuMask[i] : null;
+            int nodeArg      = firstTouch ? perWorkerNode[i]    : -1;
+
             ShardedWorker worker = new ShardedWorker(
-                    i, queues[i], shutdown,
+                    i, preAlloc, shutdown,
                     enablePinning,
-                    enablePinning ? this.coreMap[i] : -1,
+                    coreArg,
                     statsForWorker,
-                    busyIdle);
+                    busyIdle,
+                    cpuMaskArg,
+                    nodeArg,
+                    firstTouch,
+                    pubRef,
+                    queueReadyLatch);
 
             workers[i]       = worker;
             workerThreads[i] = new Thread(worker, "ShardedWorker-" + i);
             workerThreads[i].setDaemon(false);
         }
 
-        // Start all workers eagerly.  Pinning is attempted per-worker
-        // inside run(); failures are logged and the worker continues
-        // unpinned, so no startup handshake is required.
         for (Thread t : workerThreads) {
             t.start();
+        }
+
+        // If workers are self-allocating queues, wait for every one to
+        // publish before the constructor returns. Submitters must not
+        // observe a null queue.
+        if (firstTouch) {
+            try {
+                queueReadyLatch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted while waiting for NUMA-local shard queues to be published", e);
+            }
+            for (int i = 0; i < workerCount; i++) {
+                @SuppressWarnings("unchecked")
+                LinkedBlockingQueue<Task> q =
+                        (LinkedBlockingQueue<Task>) pubQueues[i].get();
+                if (q == null) {
+                    throw new IllegalStateException("worker " + i + " did not publish its shard queue");
+                }
+                queues[i] = q;
+            }
         }
     }
 

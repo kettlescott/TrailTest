@@ -245,7 +245,7 @@ public final class DiagnosticsCollector {
      * ================================================================ */
 
     /**
-     * Appends the diagnostics blocks to summary_sharded.txt. Called after
+     * Appends the diagnostics blocks to summary_sharded50.txt. Called after
      * worker threads have processed all measurement tasks.
      */
     public void appendSummary(StringBuilder sb) {

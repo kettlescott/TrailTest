@@ -244,13 +244,67 @@ public final class CpuAffinity {
     }
 
     /**
+     * Pins the CURRENT thread to a set of logical CPUs (NUMA-node-mask
+     * style affinity). Unlike {@link #pinCurrentThreadToCore(int)} — which
+     * sets exactly one bit in the {@code cpu_set_t} — this method sets one
+     * bit per element of {@code cpuIds}, so the kernel is free to migrate
+     * the thread among those CPUs. This is the "restrict to a NUMA node"
+     * mode of operation.
+     *
+     * <p><b>The existing exact-per-CPU pinning ({@link
+     * #pinCurrentThreadToCore(int)}) is intentionally left untouched so
+     * A/B comparisons stay valid.</b>
+     *
+     * @param cpuIds non-empty array of logical CPU ids to allow
+     * @throws IllegalArgumentException if {@code cpuIds} is null / empty
+     *                                  or contains an id exceeding the
+     *                                  {@code cpu_set_t} capacity
+     * @throws RuntimeException if the underlying syscall fails
+     */
+    public static void pinCurrentThreadToCpuSet(int[] cpuIds) {
+        if (!isSupported()) {
+            throw new UnsupportedOperationException(
+                    "CPU pinning is only supported on Linux. Current platform: "
+                            + System.getProperty("os.name"));
+        }
+        if (cpuIds == null || cpuIds.length == 0) {
+            throw new IllegalArgumentException("cpuIds must be non-null and non-empty");
+        }
+        for (int c : cpuIds) {
+            if (c < 0 || (c / 8) >= CPU_SET_SIZE_BYTES) {
+                throw new IllegalArgumentException(
+                        "cpuId " + c + " out of range 0.." + (CPU_SET_SIZE_BYTES * 8 - 1));
+            }
+        }
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment mask = arena.allocate(CPU_SET_SIZE_BYTES);
+            mask.fill((byte) 0);
+            for (int c : cpuIds) {
+                int byteIndex = c / 8;
+                int bitIndex  = c % 8;
+                byte prev = mask.get(ValueLayout.JAVA_BYTE, byteIndex);
+                mask.set(ValueLayout.JAVA_BYTE, byteIndex, (byte) (prev | (1 << bitIndex)));
+            }
+            int rc = (int) NativeHolder.SCHED_SET_AFFINITY.invokeExact(
+                    0, (long) CPU_SET_SIZE_BYTES, mask);
+            if (rc != 0) {
+                throw new RuntimeException("sched_setaffinity(cpuSet) failed rc=" + rc
+                        + " cpuIds=" + java.util.Arrays.toString(cpuIds));
+            }
+        } catch (RuntimeException | Error e) {
+            throw e;
+        } catch (Throwable t) {
+            throw new RuntimeException("sched_setaffinity(cpuSet) invocation failed", t);
+        }
+    }
+
+    /**
      * Reads the current thread's CPU affinity mask and returns it as a
      * human-readable hex string (useful for verification / logging).
      *
      * @return hex string of the affinity mask, or a descriptive error
      */
-    public static String getCurrentAffinityMask() {
-        if (!isSupported()) {
+    public static String getCurrentAffinityMask() {        if (!isSupported()) {
             return "(not supported on " + System.getProperty("os.name") + ")";
         }
         try (Arena arena = Arena.ofConfined()) {

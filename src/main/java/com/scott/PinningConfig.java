@@ -5,33 +5,39 @@ import java.util.Arrays;
 /**
  * Per-run worker thread pinning configuration.
  *
- * <p>When {@link #enabled()} is {@code true}, the dispatcher will pin each
- * worker thread to the CPU core given by {@code coreMap[workerIndex]}.
- * When {@code false}, {@code coreMap} is ignored.
+ * <h3>Two mutually-exclusive modes (only one applies when enabled)</h3>
+ * <ol>
+ *   <li><b>EXACT_CPU</b> (legacy) — {@code coreMap[workerIndex]} gives ONE
+ *       logical CPU per worker. Thread cannot migrate. Kept untouched
+ *       for existing A/B runs.</li>
+ *   <li><b>NUMA_NODE</b> — {@code workerNodes[workerIndex]} gives the NUMA
+ *       node id; the worker's affinity mask is set to ALL logical CPUs
+ *       belonging to that node (read from {@link NumaTopology}). Kernel
+ *       is free to migrate the thread within the node but not across
+ *       nodes.</li>
+ * </ol>
  *
- * <p>This is intentionally minimal — no NUMA logic, no automatic core
- * discovery, no placement policies.  It exists so a single YAML can
- * define both pinned and unpinned ShardedExecutor runs side-by-side.
+ * <p>When {@link #enabled()} is {@code false}, both maps are ignored.
  */
-public record PinningConfig(boolean enabled, int[] coreMap) {
+public record PinningConfig(boolean enabled, int[] coreMap, int[] workerNodes) {
 
-    /** Disabled-pinning singleton helper. */
-    public static PinningConfig disabled() {
-        return new PinningConfig(false, null);
+    public enum Mode { DISABLED, EXACT_CPU, NUMA_NODE }
+
+    /** Back-compat 2-arg constructor used across the codebase. */
+    public PinningConfig(boolean enabled, int[] coreMap) {
+        this(enabled, coreMap, null);
     }
 
-    /**
-     * Validates this pinning config against a given worker count and
-     * benchmark mode.
-     *
-     * <ul>
-     *   <li>If {@code enabled == false}, no checks are performed.</li>
-     *   <li>If {@code enabled == true}, {@code coreMap} must be non-null
-     *       and non-empty.  It may be shorter than {@code workerCount};
-     *       worker-to-core assignment is round-robin:
-     *       {@code coreMap[workerIndex % coreMap.length]}.</li>
-     * </ul>
-     */
+    public static PinningConfig disabled() {
+        return new PinningConfig(false, null, null);
+    }
+
+    public Mode mode() {
+        if (!enabled) return Mode.DISABLED;
+        if (workerNodes != null && workerNodes.length > 0) return Mode.NUMA_NODE;
+        return Mode.EXACT_CPU;
+    }
+
     public void validate(String runName, BenchmarkMode mode, int workerCount) {
         if (!enabled) return;
         if (mode != BenchmarkMode.SHARDED && mode != BenchmarkMode.SHARED) {
@@ -39,15 +45,44 @@ public record PinningConfig(boolean enabled, int[] coreMap) {
                     "runs[" + runName + "].pinning.enabled=true is only supported for mode=sharded or mode=shared "
                             + "(got mode=" + mode + ")");
         }
-        if (coreMap == null || coreMap.length == 0) {
-            throw new IllegalArgumentException(
-                    "runs[" + runName + "].pinning.coreMap must not be null or empty when enabled=true");
+        Mode m = mode();
+        if (m == Mode.NUMA_NODE) {
+            NumaTopology topo = NumaTopology.get();
+            if (!topo.isAvailable()) {
+                throw new IllegalArgumentException(
+                        "runs[" + runName + "].pinning.workerNodes requires /sys/devices/system/node "
+                                + "(non-Linux or sysfs unavailable). Fall back to coreMap-based pinning.");
+            }
+            for (int i = 0; i < workerNodes.length; i++) {
+                int n = workerNodes[i];
+                if (n < 0 || n >= topo.nodeCount()) {
+                    throw new IllegalArgumentException(
+                            "runs[" + runName + "].pinning.workerNodes[" + i + "]=" + n
+                                    + " out of range 0.." + (topo.nodeCount() - 1));
+                }
+                if (topo.cpusOfNode(n).length == 0) {
+                    throw new IllegalArgumentException(
+                            "runs[" + runName + "].pinning.workerNodes[" + i + "]=" + n
+                                    + " has no CPUs in sysfs");
+                }
+            }
+        } else { // EXACT_CPU
+            if (coreMap == null || coreMap.length == 0) {
+                throw new IllegalArgumentException(
+                        "runs[" + runName + "].pinning.coreMap must not be null or empty when enabled=true "
+                                + "(and workerNodes is not provided)");
+            }
         }
     }
 
     public String describe() {
         if (!enabled) return "Pinning: enabled=false";
-        return "Pinning: enabled=true coreMap=" + Arrays.toString(coreMap);
+        return switch (mode()) {
+            case NUMA_NODE -> "Pinning: mode=NUMA_NODE workerNodes=" + Arrays.toString(workerNodes)
+                    + " (" + NumaTopology.get().describe() + ")";
+            case EXACT_CPU -> "Pinning: mode=EXACT_CPU coreMap=" + Arrays.toString(coreMap);
+            default        -> "Pinning: enabled=false";
+        };
     }
 }
 

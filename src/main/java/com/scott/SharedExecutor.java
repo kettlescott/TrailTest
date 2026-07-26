@@ -272,14 +272,22 @@ public final class SharedExecutor implements BenchmarkExecutor {
         public Thread newThread(Runnable r) {
             int idx = counter.getAndIncrement();
             final int workerIdx = idx;
-            final boolean doPin = pinning.enabled()
-                    && pinning.coreMap() != null
-                    && pinning.coreMap().length > 0;
-            final int coreId = doPin ? pinning.coreMap()[idx % pinning.coreMap().length] : -1;
-            // Always wrap: the wrapper performs (optional) CPU pinning
-            // AND a one-shot attribution-buffer registration at worker
-            // startup. When attribution is disabled the registration
-            // is a single static volatile read + null check.
+            final PinningConfig.Mode pinMode = pinning.mode();
+            final boolean doPin = (pinMode != PinningConfig.Mode.DISABLED);
+            // EXACT_CPU: pick one CPU. NUMA_NODE: pick node id + full CPU mask.
+            final int coreId = (pinMode == PinningConfig.Mode.EXACT_CPU)
+                    ? pinning.coreMap()[idx % pinning.coreMap().length]
+                    : -1;
+            final int nodeId;
+            final int[] cpuMask;
+            if (pinMode == PinningConfig.Mode.NUMA_NODE) {
+                int[] wn = pinning.workerNodes();
+                nodeId  = wn[idx % wn.length];
+                cpuMask = NumaTopology.get().cpusOfNode(nodeId);
+            } else {
+                nodeId  = -1;
+                cpuMask = null;
+            }
             Runnable body = () -> {
                 // Install logical worker id for TPE beforeExecute/afterExecute
                 // hooks (busy/idle tracker). Set once per worker thread.
@@ -289,10 +297,20 @@ public final class SharedExecutor implements BenchmarkExecutor {
                 }
                 if (doPin) {
                     try {
-                        CpuAffinity.pinCurrentThreadToCore(coreId);
+                        if (cpuMask != null) {
+                            CpuAffinity.pinCurrentThreadToCpuSet(cpuMask);
+                        } else {
+                            CpuAffinity.pinCurrentThreadToCore(coreId);
+                        }
+                        int cpuNow  = safeCurrentCpu();
+                        int nodeNow = NumaTopology.get().nodeOfCpu(cpuNow);
+                        System.out.printf("[SharedWorker-%d] started on cpu=%d node=%d mode=%s (target node=%d)%n",
+                                workerIdx, cpuNow, nodeNow,
+                                (cpuMask != null ? "NUMA_NODE" : "EXACT_CPU"), nodeId);
                     } catch (Throwable e) {
-                        System.err.printf("[SharedWorker-%d] WARN: failed to pin to core %d: %s%n",
-                                workerIdx, coreId, e.getMessage());
+                        System.err.printf("[SharedWorker-%d] WARN: failed to pin (mode=%s coreId=%d nodeId=%d): %s%n",
+                                workerIdx, (cpuMask != null ? "NUMA_NODE" : "EXACT_CPU"),
+                                coreId, nodeId, e.getMessage());
                     }
                 }
                 AttributionRecorder _attrib = AttributionRecorder.active();
@@ -301,20 +319,33 @@ public final class SharedExecutor implements BenchmarkExecutor {
                     _attrib.ensureBufferForCurrentThread(workerIdx, -1);
                 }
                 // Always close perf fds when the worker thread exits,
-                // even on abnormal termination. Idempotent — the
-                // recorder's flushAndClose() also calls close on any
-                // surviving fds, so calling it here is safe.
+                // even on abnormal termination.
                 try {
                     r.run();
                 } finally {
                     if (_attrib != null) {
                         _attrib.closePerfFdsForCurrentThread();
                     }
+                    if (doPin) {
+                        int cpuEnd  = safeCurrentCpu();
+                        int nodeEnd = NumaTopology.get().nodeOfCpu(cpuEnd);
+                        System.out.printf("[SharedWorker-%d] exit on cpu=%d node=%d (target node=%d)%n",
+                                workerIdx, cpuEnd, nodeEnd, nodeId);
+                    }
                 }
             };
             Thread t = new Thread(body, "SharedWorker-" + idx);
             t.setDaemon(false);
             return t;
+        }
+
+        /** Best-effort sched_getcpu via PerfBridge; returns -1 if unavailable. */
+        private static int safeCurrentCpu() {
+            try {
+                return com.scott.perf.PerfBridge.currentCpu();
+            } catch (Throwable t) {
+                return -1;
+            }
         }
     }
 }

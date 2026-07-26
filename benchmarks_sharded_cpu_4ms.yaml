@@ -17,7 +17,7 @@ workloads:
   #   roughly 1.5–2 ns per iteration. 2_000_000 iters ≈ 3–4 ms wall.
   #   Re-tune if you need a different target:
   #     1) run once with `targetMillis: 4` (calibration mode)
-  #     2) read `cpuIterations[<entry>]=N (calibrated)` from summary_sharded.txt
+  #     2) read `cpuIterations[<entry>]=N (calibrated)` from summary_sharded50.txt
   #     3) paste N back here as cpuIterations
   cpu_4ms:
     - { kind: CPU, cpuIterations: 2000000, ratio: 1.0 }

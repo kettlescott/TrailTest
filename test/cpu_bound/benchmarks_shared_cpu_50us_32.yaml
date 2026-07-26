@@ -43,6 +43,23 @@ profiling:
       - "-e"
       - "context-switches,cpu-migrations"
     filename: "${runName}.perf.data"
+    # --- perf stat aggregate counters (writes <runName>.perf.stat.txt) ---
+    # Defaults to false in PerfConfig, so without this line no perf stat
+    # txt is produced regardless of perf.enabled.
+    enablePerfStat: true
+    perfStatEvents:
+      - cycles
+      - instructions
+      - branches
+      - branch-misses
+      - cache-references
+      - cache-misses
+      - LLC-loads
+      - LLC-load-misses
+      - context-switches
+      - cpu-migrations
+      - page-faults
+      - task-clock
 
   asyncProfiler:
     enabled: false
@@ -100,20 +117,3 @@ runs:
     enabled: true
     pinning:
       enabled: false
-
-  # Optional pinned A/B — mirrors the sharded pinned variant so pinning
-  # vs topology can be isolated. Verify layout with:
-  #   lscpu -p=CPU,CORE,SOCKET,NODE | grep -v '^#'
-  - name: shared_cpu_50us_32_pinned
-    mode: shared
-    workload: cpu_50us_32
-    enabled: false
-    pinning:
-      enabled: true
-      coreMap: [
-         0,  1,  2,  3,  4,  5,  6,  7,
-         8,  9, 10, 11, 12, 13, 14, 15,
-        16, 17, 18, 19, 20, 21, 22, 23,
-        24, 25, 26, 27, 28, 29, 30, 31
-      ]
-

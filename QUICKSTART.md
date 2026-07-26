@@ -250,7 +250,7 @@ diff -u results/sharded_mem_artifact_A_baseline/per_shard_latency.csv \
 # 4. Extract summary knobs for reproducibility
 for dir in results/sharded_mem_artifact_*; do
   echo "=== $(basename $dir) ===" >&2
-  grep -E "^(shardedRouting|workloadSeed|blackholeMode|retainCompleted)" $dir/summary_sharded.txt
+  grep -E "^(shardedRouting|workloadSeed|blackholeMode|retainCompleted)" $dir/summary_sharded50.txt
 done
 ```
 

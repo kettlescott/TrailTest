@@ -39,14 +39,16 @@ public final class ShardedOnlyDispatcher implements Dispatcher {
         this(workerCount, pinning, workerStats, routing, null);
     }
 
-    /** Full constructor with optional per-worker busy/idle tracker. */
+    /** Full constructor with optional per-worker busy/idle tracker.
+     *  Passes the full {@link PinningConfig} through so NUMA_NODE mode
+     *  triggers first-touch shard-queue allocation in the executor. */
     public ShardedOnlyDispatcher(int workerCount,
                                  PinningConfig pinning,
                                  WorkerStats[] workerStats,
                                  ShardedRoutingConfig routing,
                                  WorkerBusyIdleTracker busyIdle) {
         PinningConfig p = pinning == null ? PinningConfig.disabled() : pinning;
-        this.executor = new ShardedExecutor(workerCount, p.enabled(), p.coreMap(), workerStats,
+        this.executor = new ShardedExecutor(workerCount, p, workerStats,
                 routing == null ? ShardedRoutingConfig.defaults() : routing,
                 busyIdle);
     }

@@ -49,6 +49,27 @@ profiling:
       - "context-switches,cpu-migrations"
     filename: "${runName}.perf.data"
 
+    # Aggregate perf stat with NUMA DRAM counters (for A/B with the
+    # numa_node_mask experiment). Unsupported events on this host will
+    # appear as "<not counted>" in the output; existing counters are
+    # unaffected.
+    enablePerfStat: true
+    perfStatEvents:
+      - cycles
+      - instructions
+      - branches
+      - branch-misses
+      - cache-references
+      - cache-misses
+      - LLC-loads
+      - LLC-load-misses
+      - context-switches
+      - cpu-migrations
+      - page-faults
+      - task-clock
+      - mem_load_l3_miss_retired.local_dram
+      - mem_load_l3_miss_retired.remote_dram
+
   asyncProfiler:
     enabled: false
     binary: /home/wangs100/test/async-profiler-4.0-linux-x64/bin/asprof
@@ -95,26 +116,11 @@ attribution:
     - cpu-migrations
 
 runs:
+  # Baseline (no pinning) already completed — disabled to avoid rerun.
+  # Re-enable if you need to regenerate results/sharded_cpu_50us_32/.
   - name: sharded_cpu_50us_32
     mode: sharded
     workload: cpu_50us_32
     enabled: true
     pinning:
       enabled: false
-
-  # Optional pinned A/B. Host: 2× Xeon Gold 6242 — 64 logical CPUs,
-  # 32 physical cores, 2 NUMA nodes. Verify SMT-sibling layout with:
-  #   lscpu -p=CPU,CORE,SOCKET,NODE | grep -v '^#'
-  - name: sharded_cpu_50us_32_pinned
-    mode: sharded
-    workload: cpu_50us_32
-    enabled: false
-    pinning:
-      enabled: true
-      coreMap: [
-         0,  1,  2,  3,  4,  5,  6,  7,
-         8,  9, 10, 11, 12, 13, 14, 15,
-        16, 17, 18, 19, 20, 21, 22, 23,
-        24, 25, 26, 27, 28, 29, 30, 31
-      ]
-
