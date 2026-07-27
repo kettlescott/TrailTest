@@ -1,20 +1,22 @@
-# started on Sun Jul 26 12:06:33 2026
+# started on Mon Jul 27 22:45:32 2026
 
 
- Performance counter stats for process id '1115777':
+ Performance counter stats for process id '1558853':
 
- 5,845,305,322,803      cycles                           #    3.419 GHz                         (28.16%)
- 7,202,880,793,524      instructions                     #    1.23  insn per cycle              (29.96%)
-   211,286,081,410      branches                         #  123.575 M/sec                       (29.62%)
-       781,573,125      branch-misses                    #    0.37% of all branches             (29.33%)
-    15,975,236,929      cache-references                 #    9.343 M/sec                       (28.95%)
-     1,991,758,846      cache-misses                     #   12.47% of all cache refs           (28.45%)
-     5,377,485,616      LLC-loads                        #    3.145 M/sec                       (24.25%)
-       764,018,475      LLC-load-misses                  #   14.21% of all LL-cache accesses    (24.24%)
-         9,787,571      context-switches                 #    5.724 K/sec                     
-             4,068      cpu-migrations                   #    2.379 /sec                      
-           751,044      page-faults                      #  439.264 /sec                      
-      1,709,778.37 msec task-clock                       #   27.806 CPUs utilized             
+ 5,962,021,960,024      cycles                           #    3.417 GHz                         (25.12%)
+ 7,249,111,008,674      instructions                     #    1.22  insn per cycle              (26.98%)
+   215,005,175,308      branches                         #  123.236 M/sec                       (26.69%)
+       865,715,507      branch-misses                    #    0.40% of all branches             (26.39%)
+    15,816,582,246      cache-references                 #    9.066 M/sec                       (26.00%)
+     2,511,027,527      cache-misses                     #   15.88% of all cache refs           (25.69%)
+     5,804,348,038      LLC-loads                        #    3.327 M/sec                       (21.67%)
+     1,293,382,583      LLC-load-misses                  #   22.28% of all LL-cache accesses    (21.70%)
+         9,700,666      context-switches                 #    5.560 K/sec                     
+             3,321      cpu-migrations                   #    1.904 /sec                      
+           931,836      page-faults                      #  534.108 /sec                      
+      1,744,658.85 msec task-clock                       #   28.370 CPUs utilized             
+       239,313,830      mem_load_l3_miss_retired.local_dram #  137.169 K/sec                       (21.69%)
+       609,669,140      mem_load_l3_miss_retired.remote_dram #  349.449 K/sec                       (21.68%)
 
-      61.488653918 seconds time elapsed
+      61.495823356 seconds time elapsed
 
