@@ -36,9 +36,10 @@ public record RunConfig(
         BenchmarkMode parsed = BenchmarkMode.fromConfigValue(mode);
         if (parsed != BenchmarkMode.SHARED
                 && parsed != BenchmarkMode.SHARDED
-                && parsed != BenchmarkMode.HYBRID) {
+                && parsed != BenchmarkMode.HYBRID
+                && parsed != BenchmarkMode.DYNAMIC_HYBRID) {
             throw new IllegalArgumentException(
-                    "runs[" + name + "].mode must be 'shared', 'sharded', or 'hybrid', got '" + mode + "'");
+                    "runs[" + name + "].mode must be 'shared', 'sharded', 'hybrid', or 'dynamic_hybrid', got '" + mode + "'");
         }
         if (hybrid != null) {
             hybrid.validate();

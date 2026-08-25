@@ -29,6 +29,9 @@ public enum BenchmarkMode {
     /** Run {@link HybridDispatcher} routing by {@link WorkloadKind}. */
     HYBRID,
 
+    /** Run {@link DynamicHybridDispatcher} — adaptive Sharded/Shared capacity. */
+    DYNAMIC_HYBRID,
+
     /** Run all policies sequentially (legacy comparison). */
     COMPARE;
 
@@ -69,7 +72,7 @@ public enum BenchmarkMode {
             return BenchmarkMode.valueOf(normalized);
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException(
-                    "Unknown run mode: '" + value + "' (expected shared|sharded|hybrid|compare|prepare)");
+                    "Unknown run mode: '" + value + "' (expected shared|sharded|hybrid|dynamic_hybrid|compare|prepare)");
         }
     }
 }

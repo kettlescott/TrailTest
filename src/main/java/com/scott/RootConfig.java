@@ -8,6 +8,7 @@ public record RootConfig(
         Map<String, WorkloadConfig> workloads,
         ProfilingConfig profiling,
         HybridConfig hybrid,
+        DynamicHybridConfig dynamicHybrid,
         DiagnosticsConfig diagnostics,
         AttributionConfig attribution,
         List<RunConfig> runs
@@ -48,9 +49,10 @@ public record RootConfig(
             if (!workloads.containsKey(run.workload())) {
                 throw new IllegalArgumentException("Run '" + run.name() + "' references unknown workload '" + run.workload() + "'");
             }
+            BenchmarkMode m = BenchmarkMode.fromConfigValue(run.mode());
             // Hybrid runs MUST have an effective HybridConfig (either per-run
             // override or the top-level one). No implicit defaults.
-            if (BenchmarkMode.fromConfigValue(run.mode()) == BenchmarkMode.HYBRID) {
+            if (m == BenchmarkMode.HYBRID) {
                 HybridConfig effective = run.hybrid() != null ? run.hybrid() : hybrid;
                 if (effective == null) {
                     throw new IllegalArgumentException(
@@ -60,6 +62,17 @@ public record RootConfig(
                                     + "every WorkloadKind (CPU, MEMORY, IO).");
                 }
                 effective.validate();
+            }
+            // Dynamic Hybrid runs MUST have a top-level 'dynamicHybrid:' block.
+            if (m == BenchmarkMode.DYNAMIC_HYBRID) {
+                if (dynamicHybrid == null) {
+                    throw new IllegalArgumentException(
+                            "Run '" + run.name() + "' uses mode=dynamic_hybrid but no 'dynamicHybrid:' section was provided. "
+                                    + "Add a top-level 'dynamicHybrid:' block with crossoverThresholdMicros, "
+                                    + "minShardedWorkers, ewmaAlpha, scaleOutThresholdMicros, "
+                                    + "scaleInThresholdMicros, and controllerIntervalMicros.");
+                }
+                dynamicHybrid.validate(global.workerCount());
             }
         }
     }

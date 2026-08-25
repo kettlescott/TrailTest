@@ -114,8 +114,9 @@ public class BenchmarkMain {
         WorkloadConfig workload = root.workloads().get(run.workload());
         BenchmarkMode mode = BenchmarkMode.fromConfigValue(run.mode());
 
-        if (mode != BenchmarkMode.SHARED && mode != BenchmarkMode.SHARDED && mode != BenchmarkMode.HYBRID) {
-            throw new IllegalArgumentException("runs[].mode must be shared|sharded|hybrid for YAML runs: " + run.mode());
+        if (mode != BenchmarkMode.SHARED && mode != BenchmarkMode.SHARDED
+                && mode != BenchmarkMode.HYBRID && mode != BenchmarkMode.DYNAMIC_HYBRID) {
+            throw new IllegalArgumentException("runs[].mode must be shared|sharded|hybrid|dynamic_hybrid for YAML runs: " + run.mode());
         }
 
         TaskGenerator generator = new TaskGenerator(
@@ -181,7 +182,12 @@ public class BenchmarkMain {
         AttributionRecorder.setActive(attribution);
 
         Dispatcher dispatcher;
-        if (mode == BenchmarkMode.SHARDED && (workerStats != null || busyIdle != null)) {
+        if (mode == BenchmarkMode.DYNAMIC_HYBRID) {
+            // Dynamic Hybrid owns its own N worker threads; existing
+            // WorkerStats / busyIdle wiring is not applied here (kept
+            // minimal — the two existing modes remain unchanged).
+            dispatcher = new DynamicHybridDispatcher(root.dynamicHybrid(), global.workerCount());
+        } else if (mode == BenchmarkMode.SHARDED && (workerStats != null || busyIdle != null)) {
             dispatcher = new ShardedOnlyDispatcher(global.workerCount(), pinning, workerStats,
                     global.shardedRouting(), busyIdle);
         } else if (mode == BenchmarkMode.SHARED && (workerStats != null || busyIdle != null)) {

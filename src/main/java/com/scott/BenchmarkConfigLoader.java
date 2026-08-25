@@ -35,11 +35,14 @@ public final class BenchmarkConfigLoader {
             Map<String, WorkloadConfig> workloads = parseWorkloads((Map<String, Object>) root.get("workloads"));
             ProfilingConfig profiling = parseProfiling((Map<String, Object>) root.get("profiling"));
             HybridConfig hybrid = parseHybrid((Map<String, Object>) root.get("hybrid"), "hybrid");
+            DynamicHybridConfig dynamicHybrid = parseDynamicHybrid(
+                    (Map<String, Object>) root.get("dynamicHybrid"), "dynamicHybrid");
             DiagnosticsConfig diagnostics = parseDiagnostics((Map<String, Object>) root.get("diagnostics"));
             AttributionConfig attribution = parseAttribution((Map<String, Object>) root.get("attribution"));
             List<RunConfig> runs = parseRuns((List<Object>) root.get("runs"));
 
-            RootConfig config = new RootConfig(global, workloads, profiling, hybrid, diagnostics, attribution, runs);
+            RootConfig config = new RootConfig(global, workloads, profiling, hybrid, dynamicHybrid,
+                    diagnostics, attribution, runs);
             config.validate();
             return config;
         }
@@ -531,6 +534,46 @@ public final class BenchmarkConfigLoader {
         }
 
         return new HybridConfig(sharedWorkers, shardedWorkers, routing);
+    }
+
+    /**
+     * Parses a {@code dynamicHybrid:} block. Returns {@code null} when
+     * absent — existing SHARED / SHARDED / HYBRID configs therefore
+     * remain byte-identical to a build without this code. Only when a
+     * run selects {@code mode: dynamic_hybrid} does the presence of
+     * this block become mandatory (enforced by
+     * {@link RootConfig#validate()}).
+     */
+    private static DynamicHybridConfig parseDynamicHybrid(Map<String, Object> map, String path) {
+        if (map == null) return null;
+        if (!map.containsKey("crossoverThresholdMicros")) {
+            throw new IllegalArgumentException(path + ".crossoverThresholdMicros is required");
+        }
+        if (!map.containsKey("minShardedWorkers")) {
+            throw new IllegalArgumentException(path + ".minShardedWorkers is required");
+        }
+        if (!map.containsKey("ewmaAlpha")) {
+            throw new IllegalArgumentException(path + ".ewmaAlpha is required");
+        }
+        if (!map.containsKey("scaleOutThresholdMicros")) {
+            throw new IllegalArgumentException(path + ".scaleOutThresholdMicros is required");
+        }
+        if (!map.containsKey("scaleInThresholdMicros")) {
+            throw new IllegalArgumentException(path + ".scaleInThresholdMicros is required");
+        }
+        if (!map.containsKey("controllerIntervalMicros")) {
+            throw new IllegalArgumentException(path + ".controllerIntervalMicros is required");
+        }
+        return new DynamicHybridConfig(
+                longVal(map,   "crossoverThresholdMicros", 0L),
+                intVal(map,    "minShardedWorkers",        0),
+                // Default 1 preserves existing YAML that predates this
+                // field. Validation still enforces >= 1.
+                intVal(map,    "minSharedWorkers",         1),
+                doubleVal(map, "ewmaAlpha",                0.2),
+                longVal(map,   "scaleOutThresholdMicros",  0L),
+                longVal(map,   "scaleInThresholdMicros",   0L),
+                longVal(map,   "controllerIntervalMicros", 0L));
     }
 
     /**

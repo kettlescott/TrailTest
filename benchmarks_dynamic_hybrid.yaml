@@ -1,0 +1,41 @@
+# Example configuration for the DYNAMIC_HYBRID executor mode.
+#
+# Existing SHARED / SHARDED / HYBRID benchmark YAML files remain
+# unchanged and continue to work; the `dynamicHybrid:` block below is
+# only consulted when a run selects `mode: dynamic_hybrid`.
+#
+# Total worker threads = global.workerCount. The Dynamic Hybrid
+# dispatcher never creates or destroys threads; only the state of
+# individual shards is moved between ACTIVE (services local Sharded
+# queue) and INACTIVE (services global Shared queue).
+
+global:
+  workerCount: 32
+  maxInflight: 128
+  warmupSeconds: 2
+  measurementSeconds: 5
+  taskCount: 0
+
+workloads:
+  mixed_short_long:
+    - kind: CPU
+      targetMillis: 1      # ~1 ms  -> LONG when Tc=200us
+      ratio: 0.2
+    - kind: CPU
+      targetMillis: 0      # near-zero -> SHORT
+      ratio: 0.8
+
+# --- Dynamic Hybrid experimental parameters (all YAML-configurable) ---
+dynamicHybrid:
+  crossoverThresholdMicros: 200    # Tc: exec <= Tc -> SHORT, else LONG
+  minShardedWorkers:        8      # Nmin: reserved ACTIVE shards
+  ewmaAlpha:                0.2    # alpha in (0, 1]
+  scaleOutThresholdMicros:  500    # H: scale-out when Ps > H
+  scaleInThresholdMicros:   150    # L: scale-in when Ps < L (H > L)
+  controllerIntervalMicros: 1000   # controller tick period
+
+runs:
+  - name: dyn_hybrid_example
+    mode: dynamic_hybrid
+    workload: mixed_short_long
+
