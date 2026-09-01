@@ -14,9 +14,18 @@ import java.util.List;
  *   <li>IO     — no calibration; {@code targetMillis} is parked directly</li>
  * </ul>
  *
- * <p>Determinism: all random choices use a SplitMix-style hash of
- * {@code seed ^ taskId}; identical YAML + seed produces the same task
- * stream across runs.
+ * <p>Determinism:
+ * <ul>
+ *   <li>Workload selection and per-task workload seeds are derived
+ *       deterministically from the configured workload seed and the
+ *       task ID (SplitMix-style hash of {@code seed ^ taskId}).</li>
+ *   <li>Experiment 2 shard-assignment schedules are generated
+ *       independently from the configured shard-imbalance seed
+ *       ({@link ShardImbalanceConfig#randomSeed()}) and shuffled
+ *       deterministically (Fisher-Yates).</li>
+ * </ul>
+ * Identical configuration and seeds therefore produce identical
+ * workload and shard-assignment streams across runs.
  */
 public final class TaskGenerator {
 
@@ -141,16 +150,87 @@ public final class TaskGenerator {
     private final WorkloadSeedMode seedMode;
     private final long workloadSeed;
 
+    // ---- Shard-imbalance experiment (Experiment 2) ----
+    // Legacy vs Experiment 2 are distinguished ONLY by presence of the
+    // configuration object:
+    //   imbalance == null  -> legacy behaviour (routingKey == taskId)
+    //   imbalance != null  -> Experiment 2 workload path, INCLUDING the
+    //                         balanced baseline alpha=0.
+    // This guarantees all Experiment 2 alphas share exactly the same
+    // task-generation code path; only the probability distribution
+    // (and therefore the shuffled shard sequence) changes.
+    private final ShardImbalanceConfig imbalance;
+    private final int shardCount;
+    /**
+     * Single deterministic representative routing key per shard, found
+     * once at construction by scanning integers through the real
+     * {@link Hashing#shardOf}. Guarantees
+     * {@code Hashing.shardOf(representativeKeyByShard[s], N, routing) == s}.
+     * Removes the need for any RNG or hashing on the per-task path.
+     */
+    private final long[] representativeKeyByShard;
+
+    // ---- Deterministic shard-target scheduler state (Experiment 2) ----
+    // Planned only: planImbalanceSchedule(M) allocates exact per-shard
+    // counts via largest-remainder and Fisher-Yates-shuffles them with
+    // imbalance.randomSeed(). pickImbalancedRoutingKey() consumes one
+    // entry per task. Generating more (or fewer) tasks than planned is
+    // a programming error and fails fast.
+    private int[] plannedShardSeq;   // null until planImbalanceSchedule() called
+    private int   plannedIndex;
+
     public TaskGenerator(WorkloadConfig workload, long seed) {
         this(workload, seed, WorkloadSeedMode.SEQUENTIAL_TASK_ID, 0L);
     }
 
     public TaskGenerator(WorkloadConfig workload, long seed,
                          WorkloadSeedMode seedMode, long workloadSeed) {
+        this(workload, seed, seedMode, workloadSeed, null, 0, null);
+    }
+
+    /**
+     * Extended constructor supporting the shard-imbalance experiment.
+     *
+     * <p>Pass {@code imbalance == null} to retain legacy behaviour
+     * ({@link Task#routingKey()} stays equal to {@code taskId}).
+     * Any non-null imbalance configuration enables the Experiment 2
+     * workload path, including {@code alpha == 0}, which represents
+     * the balanced experimental baseline. All Experiment 2 alphas —
+     * including 0 — go through the exact same task-generation path;
+     * only the probability distribution changes.
+     *
+     * @param imbalance    experiment configuration; {@code null} means legacy mode
+     * @param shardCount   number of sharded workers (N); must be &gt; 0 when {@code imbalance != null}
+     * @param shardRouting production routing configuration used to precompute per-shard representative keys
+     */
+    public TaskGenerator(WorkloadConfig workload, long seed,
+                         WorkloadSeedMode seedMode, long workloadSeed,
+                         ShardImbalanceConfig imbalance,
+                         int shardCount,
+                         ShardedRoutingConfig shardRouting) {
         this.workload = workload;
         this.seed = seed;
         this.seedMode = seedMode == null ? WorkloadSeedMode.SEQUENTIAL_TASK_ID : seedMode;
         this.workloadSeed = workloadSeed;
+
+        // Presence of the config — NOT alpha > 0 — enables the
+        // Experiment 2 workload path. alpha=0 is a valid balanced
+        // baseline that must share the same code path as alpha>0.
+        boolean imbalanceOn = imbalance != null;
+        this.imbalance = imbalanceOn ? imbalance : null;
+        this.shardCount = imbalanceOn ? shardCount : 0;
+        ShardedRoutingConfig effectiveRouting = imbalanceOn
+                ? (shardRouting == null ? ShardedRoutingConfig.defaults() : shardRouting)
+                : null;
+        if (imbalanceOn) {
+            if (shardCount <= 0) {
+                throw new IllegalArgumentException("shardCount must be > 0 when imbalance is enabled");
+            }
+            imbalance.validate(shardCount);
+            this.representativeKeyByShard = buildRepresentativeKeys(shardCount, effectiveRouting);
+        } else {
+            this.representativeKeyByShard = null;
+        }
 
         List<WorkloadEntry> entries = workload.entries();
         this.states = new EntryState[entries.size()];
@@ -187,7 +267,7 @@ public final class TaskGenerator {
         EntryState es = selectEntry(taskId);
         Workload w = createWorkload(es, taskSeed);
         long createdNanos = System.nanoTime();
-        return new Task(taskId,
+        Task t = new Task(taskId,
                 es.entry.kind(),
                 es.entry.targetMillis(),
                 createdNanos,
@@ -195,6 +275,189 @@ public final class TaskGenerator {
                 w,
                 onComplete,
                 completionObserver);
+        if (imbalance != null) {
+            t.setRoutingKey(pickImbalancedRoutingKey());
+        }
+        return t;
+    }
+
+    /**
+     * Selects a routing key for the current task.
+     *
+     * <p><b>Planned only.</b> {@link #planImbalanceSchedule(long)} must
+     * be called before task generation begins; each call consumes one
+     * entry from the pre-shuffled shard sequence. Requesting more (or
+     * fewer) tasks than were planned is a programming error and fails
+     * fast rather than silently changing scheduling behaviour.
+     *
+     * <p><b>Hot-path guarantees.</b> No locks, no atomics, no RNG, no
+     * hashing. The path is:
+     * <pre>
+     *   target      = plannedShardSeq[plannedIndex++]
+     *   routingKey  = representativeKeyByShard[target]
+     * </pre>
+     *
+     * <p><b>Thread-safety.</b> The benchmark uses a single submitting
+     * thread; this method is not synchronized. Do not call it from
+     * multiple threads concurrently.
+     *
+     * <p><b>Determinism.</b> Same {@link ShardImbalanceConfig#randomSeed()}
+     * ⇒ identical shard sequence. Different seeds ⇒ identical aggregate
+     * counts, different temporal ordering.
+     *
+     * @throws IllegalStateException if the schedule has not been
+     *         planned, or if it has been exhausted.
+     */
+    public long pickImbalancedRoutingKey() {
+        if (plannedShardSeq == null) {
+            throw new IllegalStateException(
+                    "Experiment 2 requires planImbalanceSchedule() before task generation");
+        }
+        if (plannedIndex >= plannedShardSeq.length) {
+            throw new IllegalStateException(
+                    "Planned shard schedule exhausted (planned="
+                            + plannedShardSeq.length + ")");
+        }
+        int target = plannedShardSeq[plannedIndex++];
+        return representativeKeyByShard[target];
+    }
+
+
+    /**
+     * Builds a deterministic per-shard assignment plan for a phase of
+     * exactly {@code totalTasks} tasks and shuffles it with a
+     * reproducible seed derived from
+     * {@link ShardImbalanceConfig#randomSeed()}.
+     *
+     * <p><b>Allocation.</b> Uses the general largest-remainder
+     * (Hamilton) method uniformly across all N shards:
+     * <pre>
+     *   expected[i] = M * p[i]
+     *   count[i]    = floor(expected[i])
+     *   remaining   = M - sum(count[i])
+     *   distribute `remaining` extra tasks to shards with the largest
+     *   fractional remainders (ties broken by shard index for
+     *   reproducibility).
+     * </pre>
+     * This guarantees that integer task counts are the closest possible
+     * realization of the configured probabilities:
+     * <pre>
+     *   p_hot   = alpha + (1 - alpha) / N
+     *   p_other = (1 - alpha) / N
+     * </pre>
+     * At {@code alpha == 0} the split is as balanced as integer
+     * arithmetic permits; at {@code alpha == 1} all M tasks target
+     * exactly {@code hotShardId}.
+     *
+     * <p><b>Thread-safety.</b> Called between phases from the
+     * benchmark's single control thread. Not synchronized.
+     * Calling this method resets the planned index.
+     */
+    public void planImbalanceSchedule(long totalTasks) {
+        if (imbalance == null || totalTasks <= 0) {
+            this.plannedShardSeq = null;
+            this.plannedIndex    = 0;
+            return;
+        }
+        if (totalTasks > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(
+                    "planImbalanceSchedule: totalTasks > Integer.MAX_VALUE not supported");
+        }
+        final int M = (int) totalTasks;
+        final int N = shardCount;
+        final double alpha = imbalance.alpha();
+        final int hot = imbalance.hotShardId();
+        final double pOther = (1.0 - alpha) / N;
+        final double pHot   = pOther + alpha;
+
+        // General largest-remainder allocation.
+        int[] counts = new int[N];
+        double[] rem = new double[N];
+        int assigned = 0;
+        for (int i = 0; i < N; i++) {
+            double p = (i == hot) ? pHot : pOther;
+            double expected = M * p;
+            int floor = (int) Math.floor(expected);
+            counts[i] = floor;
+            rem[i] = expected - floor;
+            assigned += floor;
+        }
+        int leftover = M - assigned;
+        // Distribute `leftover` to the shards with the largest remainders.
+        // Ties broken by shard index (stable, reproducible).
+        while (leftover > 0) {
+            int argmax = -1;
+            double best = -1.0;
+            for (int i = 0; i < N; i++) {
+                if (rem[i] > best) { best = rem[i]; argmax = i; }
+            }
+            counts[argmax]++;
+            rem[argmax] = -1.0; // consumed
+            leftover--;
+        }
+        // Guard: at alpha=1 all mass on hot; at alpha=0 as-balanced as possible.
+        // (Both handled naturally by the loop above.)
+
+        int[] seq = new int[M];
+        int p = 0;
+        for (int s = 0; s < N; s++) {
+            int c = counts[s];
+            for (int j = 0; j < c; j++) seq[p++] = s;
+        }
+        // Fisher-Yates shuffle with a dedicated RNG seeded from the
+        // configured randomSeed so results are reproducible.
+        java.util.SplittableRandom shuffleRng =
+                new java.util.SplittableRandom(imbalance.randomSeed() ^ 0xA5A5_5A5A_C3C3_3C3CL);
+        for (int i = M - 1; i > 0; i--) {
+            int j = shuffleRng.nextInt(i + 1);
+            int tmp = seq[i]; seq[i] = seq[j]; seq[j] = tmp;
+        }
+        this.plannedShardSeq = seq;
+        this.plannedIndex    = 0;
+    }
+
+    /** For tests: exposes the planned shard sequence (or {@code null}). */
+    public int[] plannedShardSequenceForTest() {
+        return plannedShardSeq == null ? null : plannedShardSeq.clone();
+    }
+
+    /** For tests/diagnostics: the representative key for each shard. */
+    public long[] representativeKeysForTest() {
+        return representativeKeyByShard == null ? null : representativeKeyByShard.clone();
+    }
+
+    /**
+     * Finds one deterministic representative routing key per shard by
+     * scanning sequential integers through the production
+     * {@link Hashing#shardOf} function. Guarantees:
+     * <pre>
+     *   Hashing.shardOf(representativeKeyByShard[s], N, routing) == s
+     * </pre>
+     * Executed once at construction so the per-task path never hashes.
+     */
+    private static long[] buildRepresentativeKeys(int n, ShardedRoutingConfig routing) {
+        long[] keys = new long[n];
+        boolean[] found = new boolean[n];
+        int filled = 0;
+        final long maxScan = Math.max((long) n * 1024L, 1L << 16);
+        for (long k = 0; k < maxScan && filled < n; k++) {
+            int s = Hashing.shardOf(k, n, routing);
+            if (!found[s]) {
+                found[s] = true;
+                keys[s] = k;
+                filled++;
+            }
+        }
+        if (filled < n) {
+            for (int i = 0; i < n; i++) {
+                if (!found[i]) {
+                    throw new IllegalStateException(
+                            "Could not find any routing key hashing to shard " + i
+                                    + " after scanning " + maxScan + " candidates");
+                }
+            }
+        }
+        return keys;
     }
 
     private Workload createWorkload(EntryState es, long taskSeed) {

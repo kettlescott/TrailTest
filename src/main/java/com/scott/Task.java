@@ -42,6 +42,14 @@ public final class Task implements Runnable {
     private long finishNanos;
     private long workloadResult;
 
+    /**
+     * Shard-routing key. Defaults to {@link #taskId} so legacy behaviour
+     * is byte-identical. When the shard-imbalance experiment is enabled,
+     * {@link TaskGenerator} sets this to a key that lands on the desired
+     * shard under the production {@link Hashing#shardOf} function.
+     */
+    private long routingKey;
+
     public Task(long taskId,
                 WorkloadKind workloadKind,
                 long targetMillis,
@@ -70,6 +78,7 @@ public final class Task implements Runnable {
             throw new IllegalArgumentException("Task requires a non-null workloadKind");
         }
         this.taskId = taskId;
+        this.routingKey = taskId;   // default; overridable via setRoutingKey()
         this.workloadKind = workloadKind;
         this.targetMillis = targetMillis;
         this.createdNanos = createdNanos;
@@ -232,6 +241,9 @@ public final class Task implements Runnable {
     }
 
     public long taskId()              { return taskId; }
+    public long routingKey()          { return routingKey; }
+    /** Set by {@link TaskGenerator} when shard-imbalance is active. Package-private. */
+    void setRoutingKey(long key)      { this.routingKey = key; }
     public WorkloadKind workloadKind(){ return workloadKind; }
     public long targetMillis()        { return targetMillis; }
     public long createdNanos()        { return createdNanos; }

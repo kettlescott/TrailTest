@@ -92,6 +92,7 @@ public class BenchmarkMain {
     public static void main(String[] args) throws Exception {
         Path configPath = parseConfigPath(args);
         RootConfig root = BenchmarkConfigLoader.load(configPath);
+        root = applyCliOverrides(root, args);
         root.validate();
 
         System.out.println("=== YAML Benchmark Plan ===");
@@ -120,7 +121,8 @@ public class BenchmarkMain {
         }
 
         TaskGenerator generator = new TaskGenerator(
-                workload, global.seed(), global.workloadSeedMode(), global.workloadSeed());
+                workload, global.seed(), global.workloadSeedMode(), global.workloadSeed(),
+                global.shardImbalance(), global.workerCount(), global.shardedRouting());
 
         // Configure the memory-bound workload's dead-store sink for this
         // run. SHARED_VOLATILE preserves legacy behaviour; THREAD_LOCAL
@@ -194,10 +196,11 @@ public class BenchmarkMain {
             // Single-entry stats array — afterExecute() in the shared TPE
             // calls stats[0].onTaskCompleted(task) per measurement task.
             dispatcher = new SharedOnlyDispatcher(global.workerCount(), pinning,
-                    workerStats == null ? null : workerStats[0], busyIdle);
+                    workerStats == null ? null : workerStats[0], busyIdle,
+                    global.sharedQueueCount());
         } else {
             dispatcher = createDispatcher(mode, global.workerCount(), effectiveHybrid, pinning,
-                    global.shardedRouting());
+                    global.shardedRouting(), global.sharedQueueCount());
         }
 
 
@@ -1192,6 +1195,13 @@ public class BenchmarkMain {
                 ? new OnlineMeasurementCollector(taskLimit > 0 ? taskLimit : 1024, csvSink)
                 : null;
 
+        // Experiment 2: when the phase length is known (taskLimit>0),
+        // build a deterministic, shuffled shard-target plan for exact
+        // per-shard task counts. No-op when imbalance is disabled.
+        if (taskLimit > 0) {
+            generator.planImbalanceSchedule(taskLimit);
+        }
+
         while ((taskLimit > 0 ? submitted < taskLimit : System.nanoTime() < deadline)) {
             if (!permits.tryAcquire()) {
                 backpressure++;
@@ -1270,9 +1280,10 @@ public class BenchmarkMain {
 
     private static Dispatcher createDispatcher(BenchmarkMode mode, int workerCount,
                                                 HybridConfig hybrid, PinningConfig pinning,
-                                                ShardedRoutingConfig routing) {
+                                                ShardedRoutingConfig routing,
+                                                int sharedQueueCount) {
         return switch (mode) {
-            case SHARED  -> new SharedOnlyDispatcher(workerCount, pinning);
+            case SHARED  -> new SharedOnlyDispatcher(workerCount, pinning, null, null, sharedQueueCount);
             case SHARDED -> new ShardedOnlyDispatcher(workerCount, pinning, null,
                     routing == null ? ShardedRoutingConfig.defaults() : routing);
             case HYBRID  -> {
@@ -1435,6 +1446,62 @@ public class BenchmarkMain {
             }
         }
         throw new IllegalArgumentException("Missing required argument: --config=<path-to-yaml>");
+    }
+
+    /**
+     * Applies experiment CLI overrides on top of a loaded {@link RootConfig}.
+     * Supported flags (all optional; when absent YAML/defaults are kept):
+     * <pre>
+     *   --shared-queue-count=K       (Experiment 1)
+     *   --shard-imbalance-alpha=A    (Experiment 2)
+     *   --hot-shard=I                (Experiment 2)
+     *   --random-seed=S              (Experiment 2)
+     * </pre>
+     * Both {@code --flag=value} and {@code --flag value} forms are accepted.
+     */
+    private static RootConfig applyCliOverrides(RootConfig root, String[] args) {
+        Integer sharedQueueCount = null;
+        Double  alpha            = null;
+        Integer hotShard         = null;
+        Long    randomSeed       = null;
+        for (int i = 0; i < args.length; i++) {
+            String a = args[i];
+            String val = null;
+            String key;
+            int eq = a.indexOf('=');
+            if (eq >= 0) { key = a.substring(0, eq); val = a.substring(eq + 1); }
+            else         { key = a; if (i + 1 < args.length && !args[i + 1].startsWith("--")) val = args[++i]; }
+            switch (key) {
+                case "--shared-queue-count"    -> sharedQueueCount = Integer.parseInt(val);
+                case "--shard-imbalance-alpha" -> alpha            = Double.parseDouble(val);
+                case "--hot-shard"             -> hotShard         = Integer.parseInt(val);
+                case "--random-seed"           -> randomSeed       = Long.parseLong(val);
+                default -> { /* ignore unknown / --config etc. */ }
+            }
+        }
+        if (sharedQueueCount == null && alpha == null && hotShard == null && randomSeed == null) {
+            return root;
+        }
+        GlobalConfig g = root.global();
+        int sqc = sharedQueueCount != null ? sharedQueueCount : g.sharedQueueCount();
+        ShardImbalanceConfig si = g.shardImbalance();
+        if (alpha != null || hotShard != null || randomSeed != null) {
+            double a = alpha      != null ? alpha      : (si != null ? si.alpha()       : 0.0);
+            int    h = hotShard   != null ? hotShard   : (si != null ? si.hotShardId()  : 0);
+            long   s = randomSeed != null ? randomSeed : (si != null ? si.randomSeed()  : 12345L);
+            si = new ShardImbalanceConfig(a, h, s);
+        }
+        GlobalConfig g2 = new GlobalConfig(
+                g.workerCount(), g.maxInflight(), g.seed(),
+                g.warmupSeconds(), g.measurementSeconds(), g.taskCount(),
+                g.shardedRouting(), g.workloadSeedMode(), g.workloadSeed(),
+                g.blackholeMode(), g.retainCompletedTasks(),
+                sqc, si);
+        System.out.printf("[cli-override] sharedQueueCount=%d, shardImbalance=%s%n",
+                sqc, si == null ? "disabled" : si.describe());
+        return new RootConfig(g2, root.workloads(), root.profiling(),
+                root.hybrid(), root.dynamicHybrid(),
+                root.diagnostics(), root.attribution(), root.runs());
     }
     /**
      * Reads a {@code <runName>.perf.stat.txt} file (produced by

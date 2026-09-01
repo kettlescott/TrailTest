@@ -101,22 +101,33 @@ public final class SharedExecutor implements BenchmarkExecutor {
      */
     public SharedExecutor(int poolSize, PinningConfig pinning, WorkerStats stats,
                           WorkerBusyIdleTracker busyIdle) {
+        this(poolSize, pinning, stats, busyIdle, 0);
+    }
+
+    /**
+     * Full constructor with a {@code workerIdOffset} used when this
+     * SharedExecutor is one of several sub-pools of a partitioned
+     * shared dispatcher (Experiment 1). The offset guarantees globally
+     * unique worker IDs across sub-pools — critical for correct CPU
+     * pinning, {@link WorkerBusyIdleTracker} indexing, and attribution
+     * per-thread buffers.
+     */
+    public SharedExecutor(int poolSize, PinningConfig pinning, WorkerStats stats,
+                          WorkerBusyIdleTracker busyIdle, int workerIdOffset) {
         this.workQueue = new LinkedBlockingQueue<>();
         this.taskList  = BenchmarkFlags.DEBUG ? new ArrayList<>() : null;
         if (stats == null && busyIdle == null) {
             this.executor = new ThreadPoolExecutor(
                     poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
                     workQueue,
-                    new DeterministicThreadFactory(pinning));
+                    new DeterministicThreadFactory(pinning, null, workerIdOffset));
         } else {
             final WorkerStats statsF = stats;
             final WorkerBusyIdleTracker bi = busyIdle;
-            // Subclass override is the JDK-blessed way to observe per-task
-            // execution on the worker thread without wrapping Runnables.
             this.executor = new ThreadPoolExecutor(
                     poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
                     workQueue,
-                    new DeterministicThreadFactory(pinning, busyIdle)) {
+                    new DeterministicThreadFactory(pinning, busyIdle, workerIdOffset)) {
                 @Override
                 protected void beforeExecute(Thread t, Runnable r) {
                     super.beforeExecute(t, r);
@@ -254,35 +265,46 @@ public final class SharedExecutor implements BenchmarkExecutor {
         private final AtomicInteger counter = new AtomicInteger(0);
         private final PinningConfig pinning;
         private final WorkerBusyIdleTracker busyIdle;
+        /** Added by Experiment 1 so multiple SharedExecutors give
+         *  globally-unique worker IDs (see class-level Javadoc). */
+        private final int workerIdOffset;
 
         DeterministicThreadFactory() {
-            this(PinningConfig.disabled(), null);
+            this(PinningConfig.disabled(), null, 0);
         }
 
         DeterministicThreadFactory(PinningConfig pinning) {
-            this(pinning, null);
+            this(pinning, null, 0);
         }
 
         DeterministicThreadFactory(PinningConfig pinning, WorkerBusyIdleTracker busyIdle) {
+            this(pinning, busyIdle, 0);
+        }
+
+        DeterministicThreadFactory(PinningConfig pinning, WorkerBusyIdleTracker busyIdle,
+                                   int workerIdOffset) {
             this.pinning = (pinning == null) ? PinningConfig.disabled() : pinning;
             this.busyIdle = busyIdle;
+            this.workerIdOffset = workerIdOffset;
         }
 
         @Override
         public Thread newThread(Runnable r) {
-            int idx = counter.getAndIncrement();
-            final int workerIdx = idx;
+            int localIdx = counter.getAndIncrement();
+            // Global worker id: unique across all SharedExecutor sub-pools
+            // that share a workerIdOffset scheme. Used everywhere below
+            // (name, ThreadLocal, pinning coreMap, busyIdle, attribution).
+            final int workerIdx = workerIdOffset + localIdx;
             final PinningConfig.Mode pinMode = pinning.mode();
             final boolean doPin = (pinMode != PinningConfig.Mode.DISABLED);
-            // EXACT_CPU: pick one CPU. NUMA_NODE: pick node id + full CPU mask.
             final int coreId = (pinMode == PinningConfig.Mode.EXACT_CPU)
-                    ? pinning.coreMap()[idx % pinning.coreMap().length]
+                    ? pinning.coreMap()[workerIdx % pinning.coreMap().length]
                     : -1;
             final int nodeId;
             final int[] cpuMask;
             if (pinMode == PinningConfig.Mode.NUMA_NODE) {
                 int[] wn = pinning.workerNodes();
-                nodeId  = wn[idx % wn.length];
+                nodeId  = wn[workerIdx % wn.length];
                 cpuMask = NumaTopology.get().cpusOfNode(nodeId);
             } else {
                 nodeId  = -1;
@@ -334,7 +356,7 @@ public final class SharedExecutor implements BenchmarkExecutor {
                     }
                 }
             };
-            Thread t = new Thread(body, "SharedWorker-" + idx);
+            Thread t = new Thread(body, "SharedWorker-" + workerIdx);
             t.setDaemon(false);
             return t;
         }

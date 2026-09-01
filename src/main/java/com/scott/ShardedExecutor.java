@@ -13,10 +13,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>Each of the {@code workerCount} worker threads owns a dedicated
  * {@link LinkedBlockingQueue}.  Tasks are routed to a shard by
- * {@code Math.floorMod(Long.hashCode(taskId), workerCount)}, which
- * distributes tasks more uniformly than a plain modulo when task IDs
- * are sequential.  Workers consume <em>only</em> their own queue —
- * there is no work stealing.
+ * {@code Hashing.shardOf(task.routingKey(), workerCount, routing)},
+ * where {@link ShardedRoutingConfig} selects the concrete function
+ * (default: {@code MODULO} on {@code Long.hashCode} with floor-mod,
+ * uniform for dense sequential keys). Workers consume <em>only</em>
+ * their own queue — there is no work stealing.
  *
  * <p>This is the direct counterpart of {@link SharedExecutor} for
  * queue-contention benchmarks: same {@link Task}, same 4-stage timing
@@ -327,11 +328,19 @@ public final class ShardedExecutor implements BenchmarkExecutor {
      * ================================================================ */
 
     /**
-     * Routes the task to a shard using a hash of {@code taskId} and
-     * enqueues it via {@link LinkedBlockingQueue#offer(Object)}.
+     * Routes the task to a shard using
+     * {@code Hashing.shardOf(task.routingKey(), workerCount, routing)}
+     * and enqueues it via {@link LinkedBlockingQueue#offer(Object)}.
      *
-     * <p>Routing formula:
-     * {@code Math.floorMod(Long.hashCode(taskId), workerCount)}.
+     * <p><b>Experiment 2 note.</b> Controlled sharded load imbalance is
+     * introduced by the <em>workload generator</em>
+     * ({@link TaskGenerator} with a {@link ShardImbalanceConfig}),
+     * which selects {@link Task#routingKey()} so that this real,
+     * unmodified routing function delivers the desired shard
+     * distribution. The executor itself is <em>never</em> given a
+     * pre-chosen destination queue — the causal chain
+     * <em>skewed keys → Hashing.shardOf → hot shard → fixed worker
+     * saturates</em> is preserved.
      *
      * <h3>Hot-path design</h3>
      * <p>When {@link BenchmarkFlags#DEBUG} is {@code false} (default),
@@ -349,7 +358,7 @@ public final class ShardedExecutor implements BenchmarkExecutor {
         if (task.isMeasurement()) {
             measurementSubmitCount++;
         }
-        int shard = Hashing.shardOf(task.taskId(), workerCount, routing);
+        int shard = Hashing.shardOf(task.routingKey(), workerCount, routing);
         queues[shard].offer(task);
     }
 
@@ -543,8 +552,8 @@ public final class ShardedExecutor implements BenchmarkExecutor {
         System.out.printf("  min     : %d%n", measMin);
         System.out.printf("  max     : %d%n", measMax);
         System.out.printf("  average : %.1f%n", measAvg);
-        double imbalanceRatio = (measAvg > 0) ? measMax / measAvg : 0.0;
-        System.out.printf("  imbalance ratio (max/avg): %.2f%n", imbalanceRatio);
+        double maxMeanLoadRatio = (measAvg > 0) ? measMax / measAvg : 0.0;
+        System.out.printf("  max/mean load ratio (observed): %.2f%n", maxMeanLoadRatio);
     }
 }
 

@@ -82,6 +82,21 @@ public final class BenchmarkConfigLoader {
                 map.containsKey("blackholeMode") ? String.valueOf(map.get("blackholeMode")) : null);
         boolean retainCompletedTasks = boolVal(map, "retainCompletedTasks", false);
 
+        // --- Experiment 1: shared-queue contention (default 1 = legacy) ---
+        int sharedQueueCount = intVal(map, "sharedQueueCount", 1);
+
+        // --- Experiment 2: shard-imbalance (default null = disabled/legacy) ---
+        ShardImbalanceConfig shardImbalance = null;
+        Object siRaw = map.get("shardImbalance");
+        if (siRaw instanceof Map<?, ?> sim) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> siMap = (Map<String, Object>) sim;
+            double alpha = doubleVal(siMap, "alpha", 0.0);
+            int hot = intVal(siMap, "hotShardId", 0);
+            long rseed = longVal(siMap, "randomSeed", 12345L);
+            shardImbalance = new ShardImbalanceConfig(alpha, hot, rseed);
+        }
+
         return new GlobalConfig(
                 workerCount,
                 maxInflight,
@@ -93,7 +108,9 @@ public final class BenchmarkConfigLoader {
                 workloadSeedMode,
                 workloadSeed,
                 blackholeMode,
-                retainCompletedTasks
+                retainCompletedTasks,
+                sharedQueueCount,
+                shardImbalance
         );
     }
 

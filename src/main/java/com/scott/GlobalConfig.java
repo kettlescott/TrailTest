@@ -11,9 +11,13 @@ public record GlobalConfig(
         WorkloadSeedMode workloadSeedMode,
         long workloadSeed,
         BlackholeMode blackholeMode,
-        boolean retainCompletedTasks
+        boolean retainCompletedTasks,
+        /** Experiment 1: independent shared queues (default 1 = legacy). */
+        int sharedQueueCount,
+        /** Experiment 2: shard-imbalance config (null = disabled/legacy). */
+        ShardImbalanceConfig shardImbalance
 ) {
-    /** Back-compat ctor — applies legacy defaults for the new knobs. */
+    /** Back-compat ctor — applies legacy defaults for all new knobs. */
     public GlobalConfig(int workerCount,
                         int maxInflight,
                         long seed,
@@ -25,7 +29,26 @@ public record GlobalConfig(
                 WorkloadSeedMode.SEQUENTIAL_TASK_ID,
                 0L,
                 BlackholeMode.SHARED_VOLATILE,
-                false);
+                false,
+                1,
+                null);
+    }
+
+    /** Intermediate back-compat ctor (pre-experiment call sites). */
+    public GlobalConfig(int workerCount,
+                        int maxInflight,
+                        long seed,
+                        int warmupSeconds,
+                        int measurementSeconds,
+                        int taskCount,
+                        ShardedRoutingConfig shardedRouting,
+                        WorkloadSeedMode workloadSeedMode,
+                        long workloadSeed,
+                        BlackholeMode blackholeMode,
+                        boolean retainCompletedTasks) {
+        this(workerCount, maxInflight, seed, warmupSeconds, measurementSeconds, taskCount,
+                shardedRouting, workloadSeedMode, workloadSeed, blackholeMode, retainCompletedTasks,
+                1, null);
     }
 
     public void validate() {
@@ -37,5 +60,9 @@ public record GlobalConfig(
         if (shardedRouting == null) throw new IllegalArgumentException("global.shardedRouting must not be null");
         if (workloadSeedMode == null) throw new IllegalArgumentException("global.workloadSeedMode must not be null");
         if (blackholeMode == null) throw new IllegalArgumentException("global.blackholeMode must not be null");
+        if (sharedQueueCount <= 0) throw new IllegalArgumentException("global.sharedQueueCount must be > 0");
+        if (sharedQueueCount > workerCount) throw new IllegalArgumentException(
+                "global.sharedQueueCount (" + sharedQueueCount + ") must be <= workerCount (" + workerCount + ")");
+        if (shardImbalance != null) shardImbalance.validate(workerCount);
     }
 }
