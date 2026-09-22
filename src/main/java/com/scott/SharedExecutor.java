@@ -38,6 +38,13 @@ public final class SharedExecutor implements BenchmarkExecutor {
      */
     static final ThreadLocal<Integer> SHARED_WORKER_ID = new ThreadLocal<>();
 
+    /**
+     * Thread-local to track per-task finish timestamp for inter-task gap diagnostics.
+     * Updated in afterExecute; read in beforeExecute of the next task.
+     * Null when diagnostics are disabled.
+     */
+    static final ThreadLocal<Long> PREVIOUS_TASK_FINISH_NS = new ThreadLocal<>();
+
     private final ThreadPoolExecutor executor;
     private final BlockingQueue<Runnable> workQueue;
 
@@ -131,6 +138,25 @@ public final class SharedExecutor implements BenchmarkExecutor {
                 @Override
                 protected void beforeExecute(Thread t, Runnable r) {
                     super.beforeExecute(t, r);
+                    
+                    // ---- Inter-task gap diagnostics ----
+                    long pollStartNs = System.nanoTime();
+                    if (statsF != null && statsF.gapDiags != null && r instanceof Task task) {
+                        Long prevFinishNs = PREVIOUS_TASK_FINISH_NS.get();
+                        if (prevFinishNs != null && task.isMeasurement()) {
+                            long interTaskGapNs = pollStartNs - prevFinishNs;
+                            // Heuristic: estimate queue empty time based on gap timing
+                            // This will be refined when task.run() records its actual start time
+                            long emptyQueueNs = interTaskGapNs > 1000 ? (long)(interTaskGapNs * 0.5) : 0;
+                            long nonEmptyQueueNs = interTaskGapNs - emptyQueueNs;
+                            // Store metadata for afterExecute to finalize the record
+                            task._gapStartNs = pollStartNs;
+                            task._prevFinishNs = prevFinishNs;
+                            task._emptyQueueNsEstimate = emptyQueueNs;
+                            task._nonEmptyQueueNsEstimate = nonEmptyQueueNs;
+                        }
+                    }
+                    
                     if (bi != null) {
                         Integer wid = SHARED_WORKER_ID.get();
                         if (wid != null) bi.beforeTask(wid, System.nanoTime());
@@ -138,14 +164,30 @@ public final class SharedExecutor implements BenchmarkExecutor {
                 }
                 @Override
                 protected void afterExecute(Runnable r, Throwable th) {
+                    long finishNs = System.nanoTime();
                     super.afterExecute(r, th);
                     if (bi != null) {
                         Integer wid = SHARED_WORKER_ID.get();
-                        if (wid != null) bi.afterTask(wid, System.nanoTime());
+                        if (wid != null) bi.afterTask(wid, finishNs);
                     }
                     if (statsF != null && r instanceof Task task) {
                         statsF.onTaskCompleted(task);
+                        
+                        // ---- Record inter-task gap if diagnostics enabled ----
+                        if (statsF.gapDiags != null && task.isMeasurement() && task._prevFinishNs > 0) {
+                            long interTaskGapNs = task._gapStartNs - task._prevFinishNs;
+                            long executionNs = task.executionTimeNanos();
+                            long pollNs = task._gapStartNs - task._prevFinishNs; // approximation
+                            long emptyQueueNs = task._emptyQueueNsEstimate;
+                            long nonEmptyQueueNs = task._nonEmptyQueueNsEstimate;
+                            statsF.recordInterTaskGap(interTaskGapNs, pollNs, emptyQueueNs, nonEmptyQueueNs, executionNs);
+                            // Clear metadata
+                            task._prevFinishNs = 0;
+                            task._gapStartNs = 0;
+                        }
                     }
+                    // Store finish time for next task's gap calculation
+                    PREVIOUS_TASK_FINISH_NS.set(finishNs);
                 }
             };
         }

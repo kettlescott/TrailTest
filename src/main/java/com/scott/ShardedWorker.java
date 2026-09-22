@@ -300,6 +300,7 @@ final class ShardedWorker implements Runnable {
         //      throwable, interrupt during shutdown, etc.). The
         //      sampled rows already in the per-worker buffer remain
         //      intact for flushAndClose() to drain. ----
+        long previousTaskFinishNs = System.nanoTime();
         try {
             while (true) {
                 // Fast exit: shutdown requested and nothing left to drain.
@@ -307,6 +308,10 @@ final class ShardedWorker implements Runnable {
                     return;
                 }
 
+                // ---- Inter-task gap diagnostics: measure poll latency ----
+                long pollStartNs = System.nanoTime();
+                long interTaskGapNs = pollStartNs - previousTaskFinishNs;
+                
                 final Task task;
                 try {
                     task = effectiveQueue.take();
@@ -319,16 +324,39 @@ final class ShardedWorker implements Runnable {
                     continue;
                 }
 
+                long pollFinishNs = System.nanoTime();
+                long pollNs = pollFinishNs - pollStartNs;
+                // Estimate: time spent when queue was empty vs. when queue had items.
+                // Simple heuristic: if poll was very fast (< 100ns), queue was likely non-empty.
+                long emptyQueueNs = 0;
+                long nonEmptyQueueNs = pollNs;
+                if (pollNs > 100) {
+                    // Longer poll suggests queue was empty at some point.
+                    // Conservative estimate: attribute 70% to empty queue wait.
+                    emptyQueueNs = (long) (pollNs * 0.7);
+                    nonEmptyQueueNs = pollNs - emptyQueueNs;
+                }
+
                 // Task.run() records start/finish timestamps, executes the
                 // workload, and counts down the batch latch — identical to
                 // the SharedExecutor code path via ThreadPoolExecutor.
                 if (busyIdle != null) busyIdle.beforeTask(workerId, System.nanoTime());
+                long taskExecStartNs = System.nanoTime();
                 if (stats != null) {
                     task.runWithBeforeComplete(stats);
                 } else {
                     task.run();
                 }
+                long taskExecFinishNs = System.nanoTime();
+                long executionNs = taskExecFinishNs - taskExecStartNs;
                 if (busyIdle != null) busyIdle.afterTask(workerId, System.nanoTime());
+                
+                // Record inter-task gap metrics if this is a measurement task
+                if (stats != null && task.isMeasurement()) {
+                    stats.recordInterTaskGap(interTaskGapNs, pollNs, emptyQueueNs, nonEmptyQueueNs, executionNs);
+                }
+
+                previousTaskFinishNs = taskExecFinishNs;
                 processedCount++;
                 if (task.isMeasurement()) {
                     measurementProcessedCount++;

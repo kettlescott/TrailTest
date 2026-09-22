@@ -207,7 +207,7 @@ A workload is a **list of entries**, each describing one task class:
 
 | Field | Required | Notes |
 |---|---|---|
-| `name` | yes | Output folder under `results/` |
+| `name` | yes | Output folder under `backup/results` |
 | `mode` | yes | `shared` \| `sharded` \| `hybrid` |
 | `workload` | yes | Key from the `workloads:` map |
 | `hybrid` | no | Per-run override of the top-level `hybrid:` block |
@@ -218,13 +218,13 @@ A workload is a **list of entries**, each describing one task class:
 
 For each run in `runs:`:
 
-- `results/<runName>/summary.txt`               — see breakdown below
-- `results/<runName>/run.json`                  — reproducibility metadata (host, JVM, OS, config, outputs)
-- `results/<runName>/<runName>.jfr`             — when `profiling.enabled: true`
-- `results/<runName>/<runName>.perf.data`       — when `profiling.perf.enabled: true`
-- `results/<runName>/<runName>.perf.log`        — `perf record` stderr / launch diagnostics
-- `results/<runName>/<runName>.async.jfr`       — when `profiling.asyncProfiler.enabled: true`
-- `results/<runName>/<runName>.async.log`       — `asprof start`/`stop` stderr
+- `backup/results`               — see breakdown below
+- `backup/results`                  — reproducibility metadata (host, JVM, OS, config, outputs)
+- `backup/results`             — when `profiling.enabled: true`
+- `backup/results`       — when `profiling.perf.enabled: true`
+- `backup/results`        — `perf record` stderr / launch diagnostics
+- `backup/results`       — when `profiling.asyncProfiler.enabled: true`
+- `backup/results`       — `asprof start`/`stop` stderr
 
 ### `summary.txt` content
 
@@ -599,8 +599,8 @@ overhead by 10×.
 
 When `asyncProfiler.enabled: true`:
 
-- `results/<runName>/<runName>.async.jfr`  — samples (or `.html` / `.collapsed` / `.tree.html`, per `format:`)
-- `results/<runName>/<runName>.async.log`  — `asprof start`/`stop` stderr
+- `backup/results`  — samples (or `.html` / `.collapsed` / `.tree.html`, per `format:`)
+- `backup/results`  — `asprof start`/`stop` stderr
 - `run.json` gains `asyncProfilerEnabled`, `asyncProfilerEvent`,
   `asyncProfilerInterval`, `asyncProfilerFormat`, `asyncProfilerOutput`.
 

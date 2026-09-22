@@ -1,0 +1,961 @@
+runName=sharded_cpu_50us_32_numa_node_mask
+mode=sharded
+workload=cpu_50us_32
+workerBudget=32
+maxInFlight=32
+workloadEntries=1
+entry[0]=name=cpu_0ms, kind=CPU, targetMillis=0, ratio=1.0000, cpuIterations=16000
+calibrationEntries=1
+calibration[0]=name=cpu_0ms, kind=CPU, targetMillis=0, cpuIterations=16000  (fixed; calibration bypassed)
+pinningEnabled=false
+pinningCoreMap=null
+shardedRouting.mode=MODULO
+shardedRouting.seed=0
+workloadSeedMode=SEQUENTIAL_TASK_ID
+workloadSeed=0
+blackholeMode=SHARED_VOLATILE
+retainCompletedTasks=false
+retainCompletedTasks.configured=false
+submitted=26456253
+submitDurationSeconds=60.000
+taskDrainDurationSeconds=0.000
+shutdownDurationSeconds=0.704
+drainDurationSeconds=0.704
+totalDurationSeconds=60.704
+submittedPerSecond=440937.5
+completedPerSecond=435823.9
+backpressureEvents=294563
+backpressureWaitMillis=2724.701
+avgQueueDepth=3.80
+maxQueueDepth=16
+queueDepthSamples=6002
+
+=== Latency: overall ===
+Recorded tasks: 26456253
+
+Metric                  p50        p90        p95        p99        max
+------------------------------------------------------------------------
+Submit overhead      0.000 ms     0.000 ms     0.000 ms     0.002 ms     0.468 ms
+Queue wait           0.010 ms     0.012 ms     0.013 ms     0.017 ms     2.026 ms
+Execution            0.050 ms     0.054 ms     0.056 ms     0.063 ms     1.375 ms
+End-to-end           0.059 ms     0.066 ms     0.067 ms     0.075 ms     2.076 ms
+
+=== Latency: CPU ===
+Recorded tasks: 26456253
+
+Metric                  p50        p90        p95        p99        max
+------------------------------------------------------------------------
+Submit overhead      0.000 ms     0.000 ms     0.000 ms     0.002 ms     0.468 ms
+Queue wait           0.010 ms     0.012 ms     0.013 ms     0.017 ms     2.026 ms
+Execution            0.050 ms     0.054 ms     0.056 ms     0.063 ms     1.375 ms
+End-to-end           0.059 ms     0.066 ms     0.067 ms     0.075 ms     2.076 ms
+
+cpuIterations[cpu_0ms]=16000  (fixed)
+executionMs.avg=0.051
+executionMs.p50=0.050
+executionMs.p95=0.056
+executionMs.p99=0.063
+perKind.CPU.count=26456253
+perKind.CPU.queueWaitMs.p50=0.010, p95=0.013, p99=0.017
+perKind.CPU.executionMs.avg=0.051
+perKind.CPU.executionMs.p50=0.050, p95=0.056, p99=0.063
+perKind.CPU.endToEndMs.p50=0.059, p95=0.067, p99=0.075
+
+=== Tail / Drain Diagnostic ===
+  measurementSubmitted               : 26,456,253
+  completedDuringSubmitWindow        : 26,456,226
+  completedDuringShutdownWindow      : 27
+  completedDuringTaskDrainWindow     : 0
+  tasksWithStartNanos==0  (skipped)  : 0
+  tasksWithFinishNanos==0 (skipped)  : 0
+  finishedAfterReportedDrainEnd      : 0
+  submitWindow                        : 0.000 ms .. 60000.003 ms
+  shutdownWindow  (session.stop)      : 60000.003 ms .. 60703.972 ms
+  taskDrainWindow (workload finish)   : 60703.972 ms .. 60703.991 ms
+  latestTaskFinishNanos (rel)         : 60000.059 ms
+
+  Top-10 tasks by end-to-end latency:
+    rank taskId      kind   meas phase     enq(ms)   start(ms)  finish(ms)   queueWait(ms)   exec(ms)   endToEnd(ms)
+       1 29980059    CPU    Y    submit  57297.594   57299.620   57299.670          2.026      0.050          2.076
+       2 29980027    CPU    Y    submit  57297.503   57299.517   57299.567          2.014      0.049          2.064
+       3 29980091    CPU    Y    submit  57297.673   57299.674   57299.724          2.001      0.050          2.050
+       4 29980123    CPU    Y    submit  57297.763   57299.733   57299.783          1.970      0.050          2.019
+       5 29980155    CPU    Y    submit  57297.852   57299.786   57299.835          1.934      0.049          1.984
+       6 29980187    CPU    Y    submit  57297.932   57299.839   57299.888          1.907      0.050          1.956
+       7 30307919    CPU    Y    submit  58051.847   58053.741   58053.795          1.894      0.053          1.947
+       8 30307887    CPU    Y    submit  58051.774   58053.659   58053.714          1.885      0.055          1.940
+       9 29980219    CPU    Y    submit  57298.024   57299.892   57299.942          1.868      0.050          1.918
+      10 14710342    CPU    Y    submit  22770.552   22772.397   22772.452          1.845      0.055          1.900
+
+  Per-shard pending queue size (at submitEnd / after drain) + measurement-completed count per worker:
+    shard[ 0]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[ 1]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[ 2]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[ 3]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[ 4]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[ 5]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[ 6]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[ 7]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[ 8]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[ 9]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[10]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[11]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[12]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[13]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[14]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[15]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[16]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[17]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[18]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[19]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[20]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[21]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[22]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[23]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[24]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[25]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[26]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[27]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[28]  submitEnd=    0  postDrain=    0   measCompleted= 826,758  allPhases= 973,112
+    shard[29]  submitEnd=    0  postDrain=    0   measCompleted= 826,757  allPhases= 973,111
+    shard[30]  submitEnd=    0  postDrain=    0   measCompleted= 826,757  allPhases= 973,111
+    shard[31]  submitEnd=    0  postDrain=    0   measCompleted= 826,757  allPhases= 973,111
+    TOTAL      submitEnd=    0  postDrain=    0
+
+
+=== Latency: overall averages ===
+queueWaitMs.avg=0.010
+queueWaitMs.p50=0.010
+queueWaitMs.p95=0.013
+queueWaitMs.p99=0.017
+endToEndMs.avg=0.061
+endToEndMs.p50=0.059
+endToEndMs.p95=0.067
+endToEndMs.p99=0.075
+
+=== Benchmark Completion ===
+completion.submittedTasks=26456253
+completion.completedTasksAllPhases=31139581
+completion.submitDurationSeconds=60.000003
+completion.shutdownDurationSeconds=0.703970
+completion.taskDrainDurationSeconds=0.000018
+completion.totalDurationSeconds=60.703991
+completion.wallClockWindowSeconds=89.601445
+completion.throughputFormula=submitted / totalDurationSeconds (= submitted / (submit + shutdown + drain))
+completion.submittedPerSecond=440937.5
+completion.completedPerSecond=435823.9
+completion.processCpuUtilization=0.2883  (cpuTimeNs=1653180000000, wallNs=89601444561, cores=64)
+
+=== Diagnostics: worker busy / idle ===
+  (busyNs   = time inside task.run();  idleNs = time between finish and next start)
+  worker           busyMs         idleMs          tasks    busy%    idle%
+  0             51536.071      19176.719         973112   72.88%   27.12%
+  1             50374.223      20349.611         973112   71.23%   28.77%
+  2             50946.684      19766.180         973112   72.05%   27.95%
+  3             50900.512      19823.072         973112   71.97%   28.03%
+  4             50922.106      19801.779         973112   72.00%   28.00%
+  5             51288.010      19429.012         973112   72.53%   27.47%
+  6             51142.209      19570.768         973112   72.32%   27.68%
+  7             51489.254      19227.544         973112   72.81%   27.19%
+  8             51026.858      19690.503         973112   72.16%   27.84%
+  9             51340.509      19372.947         973112   72.60%   27.40%
+  10            50937.186      19775.700         973112   72.03%   27.97%
+  11            51066.423      19646.535         973112   72.22%   27.78%
+  12            51005.674      19707.327         973112   72.13%   27.87%
+  13            51374.444      19338.642         973112   72.65%   27.35%
+  14            50994.735      19718.207         973112   72.12%   27.88%
+  15            50964.352      19748.537         973112   72.07%   27.93%
+  16            51007.330      19705.501         973112   72.13%   27.87%
+  17            51043.134      19670.299         973112   72.18%   27.82%
+  18            50924.422      19789.004         973112   72.02%   27.98%
+  19            51397.347      19315.589         973112   72.68%   27.32%
+  20            51002.867      19710.123         973112   72.13%   27.87%
+  21            51026.400      19686.286         973112   72.16%   27.84%
+  22            50606.688      20106.800         973112   71.57%   28.43%
+  23            50959.211      19753.713         973112   72.06%   27.94%
+  24            51001.132      19711.687         973112   72.12%   27.88%
+  25            51417.258      19295.583         973112   72.71%   27.29%
+  26            51385.363      19327.562         973112   72.67%   27.33%
+  27            50668.792      20044.104         973112   71.65%   28.35%
+  28            50542.023      20171.024         973112   71.47%   28.53%
+  29            50623.619      20088.794         973111   71.59%   28.41%
+  30            50762.014      19950.586         973111   71.79%   28.21%
+  31            51400.559      19312.030         973111   72.69%   27.31%
+
+  aggregate.workers=32
+  aggregate.totalBusyMs=1633077.409, totalIdleMs=629781.769, totalTasks=31139581
+  aggregate.busyRatio=0.7217  (sum(busy)/sum(busy+idle))
+  busyRatio.mean=0.7217, min=0.7123, max=0.7288, stddev=0.0040, cv=0.0056
+  idleRatio.mean=0.2783, min=0.2712, max=0.2877, stddev=0.0040, cv=0.0145
+  tasksPerWorker.mean=973111.91, min=973111, max=973112, stddev=0.29, cv=0.0000
+
+=== Perf Stat (aggregate, per-task normalized) ===
+perfStat.cyclesPerTask=217243.5
+perfStat.instructionsPerTask=254114.3
+perfStat.ipc=1.170
+perfStat.cpuMigrationsPerTask=0.0002
+perfStat.llcLoadMissesPerTask=56.69
+perfStat.localDramReadsPerTask=19.96
+perfStat.remoteDramReadsPerTask=9.95
+perfStat.remoteDramRatio=0.3326
+perfStat.raw.cycles=5747449003778, instructions=6722911270183, llcLoadMisses=1499752063, localDram=528105086, remoteDram=263202111, cpuMigrations=4941
+perfStat.file=results/sharded_cpu_50us_32_numa_node_mask/sharded_cpu_50us_32_numa_node_mask.perf.stat.txt
+
+=== Diagnostics: config ===
+diagnostics.enabled=true
+diagnostics.perWorkerLatency=false
+diagnostics.queueDepthByShard=true
+diagnostics.windowSampling=true
+diagnostics.windowCorrelation=true
+diagnostics.windowSeconds=1.0
+diagnostics.slowExecutionMicros=200
+
+=== Diagnostics: per worker ===
+worker[0].processed=826758
+worker[0].slowTasks=12
+worker[0].maxSlowBurst=1
+worker[1].processed=826758
+worker[1].slowTasks=10
+worker[1].maxSlowBurst=1
+worker[2].processed=826758
+worker[2].slowTasks=12
+worker[2].maxSlowBurst=1
+worker[3].processed=826758
+worker[3].slowTasks=9
+worker[3].maxSlowBurst=1
+worker[4].processed=826758
+worker[4].slowTasks=12
+worker[4].maxSlowBurst=1
+worker[5].processed=826758
+worker[5].slowTasks=13
+worker[5].maxSlowBurst=1
+worker[6].processed=826758
+worker[6].slowTasks=11
+worker[6].maxSlowBurst=1
+worker[7].processed=826758
+worker[7].slowTasks=12
+worker[7].maxSlowBurst=1
+worker[8].processed=826758
+worker[8].slowTasks=15
+worker[8].maxSlowBurst=1
+worker[9].processed=826758
+worker[9].slowTasks=9
+worker[9].maxSlowBurst=1
+worker[10].processed=826758
+worker[10].slowTasks=6
+worker[10].maxSlowBurst=1
+worker[11].processed=826758
+worker[11].slowTasks=11
+worker[11].maxSlowBurst=1
+worker[12].processed=826758
+worker[12].slowTasks=10
+worker[12].maxSlowBurst=1
+worker[13].processed=826758
+worker[13].slowTasks=10
+worker[13].maxSlowBurst=1
+worker[14].processed=826758
+worker[14].slowTasks=15
+worker[14].maxSlowBurst=1
+worker[15].processed=826758
+worker[15].slowTasks=7
+worker[15].maxSlowBurst=1
+worker[16].processed=826758
+worker[16].slowTasks=13
+worker[16].maxSlowBurst=1
+worker[17].processed=826758
+worker[17].slowTasks=10
+worker[17].maxSlowBurst=1
+worker[18].processed=826758
+worker[18].slowTasks=11
+worker[18].maxSlowBurst=1
+worker[19].processed=826758
+worker[19].slowTasks=8
+worker[19].maxSlowBurst=1
+worker[20].processed=826758
+worker[20].slowTasks=6
+worker[20].maxSlowBurst=1
+worker[21].processed=826758
+worker[21].slowTasks=7
+worker[21].maxSlowBurst=1
+worker[22].processed=826758
+worker[22].slowTasks=6
+worker[22].maxSlowBurst=1
+worker[23].processed=826758
+worker[23].slowTasks=13
+worker[23].maxSlowBurst=1
+worker[24].processed=826758
+worker[24].slowTasks=5
+worker[24].maxSlowBurst=1
+worker[25].processed=826758
+worker[25].slowTasks=6
+worker[25].maxSlowBurst=1
+worker[26].processed=826758
+worker[26].slowTasks=11
+worker[26].maxSlowBurst=1
+worker[27].processed=826758
+worker[27].slowTasks=13
+worker[27].maxSlowBurst=1
+worker[28].processed=826758
+worker[28].slowTasks=9
+worker[28].maxSlowBurst=1
+worker[29].processed=826757
+worker[29].slowTasks=11
+worker[29].maxSlowBurst=1
+worker[30].processed=826757
+worker[30].slowTasks=14
+worker[30].maxSlowBurst=1
+worker[31].processed=826757
+worker[31].slowTasks=10
+worker[31].maxSlowBurst=1
+
+=== Diagnostics: queue depth ===
+shard[0].avgQueueDepth=1.13, maxQueueDepth=6, p95QueueDepth=2, trueAvgDepth=0.112, emptyRatio=0.8892, nonEmptyRatio=0.1108  (windows=60, subTicks=6002)
+shard[1].avgQueueDepth=1.08, maxQueueDepth=4, p95QueueDepth=1, trueAvgDepth=0.137, emptyRatio=0.8634, nonEmptyRatio=0.1366  (windows=60, subTicks=6002)
+shard[2].avgQueueDepth=1.12, maxQueueDepth=3, p95QueueDepth=2, trueAvgDepth=0.131, emptyRatio=0.8704, nonEmptyRatio=0.1296  (windows=60, subTicks=6002)
+shard[3].avgQueueDepth=1.08, maxQueueDepth=2, p95QueueDepth=2, trueAvgDepth=0.115, emptyRatio=0.8855, nonEmptyRatio=0.1145  (windows=60, subTicks=6002)
+shard[4].avgQueueDepth=1.17, maxQueueDepth=5, p95QueueDepth=2, trueAvgDepth=0.124, emptyRatio=0.8779, nonEmptyRatio=0.1221  (windows=60, subTicks=6002)
+shard[5].avgQueueDepth=1.07, maxQueueDepth=2, p95QueueDepth=2, trueAvgDepth=0.111, emptyRatio=0.8892, nonEmptyRatio=0.1108  (windows=60, subTicks=6002)
+shard[6].avgQueueDepth=1.08, maxQueueDepth=3, p95QueueDepth=1, trueAvgDepth=0.110, emptyRatio=0.8905, nonEmptyRatio=0.1095  (windows=60, subTicks=6002)
+shard[7].avgQueueDepth=1.05, maxQueueDepth=2, p95QueueDepth=1, trueAvgDepth=0.112, emptyRatio=0.8887, nonEmptyRatio=0.1113  (windows=60, subTicks=6002)
+shard[8].avgQueueDepth=1.03, maxQueueDepth=2, p95QueueDepth=1, trueAvgDepth=0.105, emptyRatio=0.8955, nonEmptyRatio=0.1045  (windows=60, subTicks=6002)
+shard[9].avgQueueDepth=1.03, maxQueueDepth=2, p95QueueDepth=1, trueAvgDepth=0.110, emptyRatio=0.8900, nonEmptyRatio=0.1100  (windows=60, subTicks=6002)
+shard[10].avgQueueDepth=1.08, maxQueueDepth=3, p95QueueDepth=2, trueAvgDepth=0.124, emptyRatio=0.8764, nonEmptyRatio=0.1236  (windows=60, subTicks=6002)
+shard[11].avgQueueDepth=1.25, maxQueueDepth=9, p95QueueDepth=2, trueAvgDepth=0.123, emptyRatio=0.8795, nonEmptyRatio=0.1205  (windows=60, subTicks=6002)
+shard[12].avgQueueDepth=1.17, maxQueueDepth=8, p95QueueDepth=2, trueAvgDepth=0.132, emptyRatio=0.8694, nonEmptyRatio=0.1306  (windows=60, subTicks=6002)
+shard[13].avgQueueDepth=1.07, maxQueueDepth=2, p95QueueDepth=2, trueAvgDepth=0.118, emptyRatio=0.8827, nonEmptyRatio=0.1173  (windows=60, subTicks=6002)
+shard[14].avgQueueDepth=1.15, maxQueueDepth=8, p95QueueDepth=1, trueAvgDepth=0.141, emptyRatio=0.8609, nonEmptyRatio=0.1391  (windows=60, subTicks=6002)
+shard[15].avgQueueDepth=1.20, maxQueueDepth=6, p95QueueDepth=2, trueAvgDepth=0.139, emptyRatio=0.8630, nonEmptyRatio=0.1370  (windows=60, subTicks=6002)
+shard[16].avgQueueDepth=1.05, maxQueueDepth=2, p95QueueDepth=1, trueAvgDepth=0.121, emptyRatio=0.8797, nonEmptyRatio=0.1203  (windows=60, subTicks=6002)
+shard[17].avgQueueDepth=1.05, maxQueueDepth=3, p95QueueDepth=1, trueAvgDepth=0.118, emptyRatio=0.8820, nonEmptyRatio=0.1180  (windows=60, subTicks=6002)
+shard[18].avgQueueDepth=1.15, maxQueueDepth=8, p95QueueDepth=1, trueAvgDepth=0.125, emptyRatio=0.8767, nonEmptyRatio=0.1233  (windows=60, subTicks=6002)
+shard[19].avgQueueDepth=1.10, maxQueueDepth=2, p95QueueDepth=2, trueAvgDepth=0.110, emptyRatio=0.8914, nonEmptyRatio=0.1086  (windows=60, subTicks=6002)
+shard[20].avgQueueDepth=1.12, maxQueueDepth=5, p95QueueDepth=2, trueAvgDepth=0.132, emptyRatio=0.8690, nonEmptyRatio=0.1310  (windows=60, subTicks=6002)
+shard[21].avgQueueDepth=1.03, maxQueueDepth=2, p95QueueDepth=1, trueAvgDepth=0.112, emptyRatio=0.8887, nonEmptyRatio=0.1113  (windows=60, subTicks=6002)
+shard[22].avgQueueDepth=1.00, maxQueueDepth=1, p95QueueDepth=1, trueAvgDepth=0.118, emptyRatio=0.8819, nonEmptyRatio=0.1181  (windows=60, subTicks=6002)
+shard[23].avgQueueDepth=1.20, maxQueueDepth=13, p95QueueDepth=1, trueAvgDepth=0.130, emptyRatio=0.8717, nonEmptyRatio=0.1283  (windows=60, subTicks=6002)
+shard[24].avgQueueDepth=1.00, maxQueueDepth=1, p95QueueDepth=1, trueAvgDepth=0.111, emptyRatio=0.8892, nonEmptyRatio=0.1108  (windows=60, subTicks=6002)
+shard[25].avgQueueDepth=1.02, maxQueueDepth=2, p95QueueDepth=1, trueAvgDepth=0.108, emptyRatio=0.8920, nonEmptyRatio=0.1080  (windows=60, subTicks=6002)
+shard[26].avgQueueDepth=1.07, maxQueueDepth=4, p95QueueDepth=1, trueAvgDepth=0.108, emptyRatio=0.8922, nonEmptyRatio=0.1078  (windows=60, subTicks=6002)
+shard[27].avgQueueDepth=1.27, maxQueueDepth=8, p95QueueDepth=2, trueAvgDepth=0.118, emptyRatio=0.8849, nonEmptyRatio=0.1151  (windows=60, subTicks=6002)
+shard[28].avgQueueDepth=1.03, maxQueueDepth=2, p95QueueDepth=1, trueAvgDepth=0.131, emptyRatio=0.8697, nonEmptyRatio=0.1303  (windows=60, subTicks=6002)
+shard[29].avgQueueDepth=1.03, maxQueueDepth=2, p95QueueDepth=1, trueAvgDepth=0.130, emptyRatio=0.8699, nonEmptyRatio=0.1301  (windows=60, subTicks=6002)
+shard[30].avgQueueDepth=1.13, maxQueueDepth=3, p95QueueDepth=2, trueAvgDepth=0.119, emptyRatio=0.8822, nonEmptyRatio=0.1178  (windows=60, subTicks=6002)
+shard[31].avgQueueDepth=1.12, maxQueueDepth=2, p95QueueDepth=2, trueAvgDepth=0.110, emptyRatio=0.8915, nonEmptyRatio=0.1085  (windows=60, subTicks=6002)
+avgQueueDepth.maxOverMean=1.154
+maxQueueDepth.maxOverMean=3.276
+aggregate.trueAvgDepth=0.120, emptyRatio=0.8808, nonEmptyRatio=0.1192, subTicks=192064
+trueAvgDepth.maxOverMean=1.170
+emptyRatio.min=0.8609, max=0.8955
+nonEmptyRatio.min=0.1045, max=0.1391
+
+=== Diagnostics: imbalance ===
+processedCount.maxOverMin=1.000
+
+=== Diagnostics: time windows ===
+window[0].completedPerWorker.min=12288, mean=12288.0, max=12288, maxOverMin=1.000, worstWorker=0
+window[0].maxQueueDepth=8
+window[0].queueDepthImbalance=5.120
+window[1].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[1].maxQueueDepth=1
+window[1].queueDepthImbalance=1.000
+window[2].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[2].maxQueueDepth=2
+window[2].queueDepthImbalance=1.939
+window[3].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[3].maxQueueDepth=2
+window[3].queueDepthImbalance=1.939
+window[4].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[4].maxQueueDepth=2
+window[4].queueDepthImbalance=1.939
+window[5].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[5].maxQueueDepth=1
+window[5].queueDepthImbalance=1.000
+window[6].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[6].maxQueueDepth=8
+window[6].queueDepthImbalance=6.564
+window[7].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[7].maxQueueDepth=2
+window[7].queueDepthImbalance=1.882
+window[8].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[8].maxQueueDepth=1
+window[8].queueDepthImbalance=1.000
+window[9].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[9].maxQueueDepth=6
+window[9].queueDepthImbalance=4.364
+window[10].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[10].maxQueueDepth=2
+window[10].queueDepthImbalance=1.939
+window[11].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[11].maxQueueDepth=3
+window[11].queueDepthImbalance=2.743
+window[12].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[12].maxQueueDepth=3
+window[12].queueDepthImbalance=2.462
+window[13].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[13].maxQueueDepth=8
+window[13].queueDepthImbalance=6.564
+window[14].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[14].maxQueueDepth=2
+window[14].queueDepthImbalance=1.882
+window[15].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[15].maxQueueDepth=2
+window[15].queueDepthImbalance=1.882
+window[16].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[16].maxQueueDepth=2
+window[16].queueDepthImbalance=1.939
+window[17].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[17].maxQueueDepth=1
+window[17].queueDepthImbalance=1.000
+window[18].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[18].maxQueueDepth=2
+window[18].queueDepthImbalance=1.882
+window[19].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[19].maxQueueDepth=3
+window[19].queueDepthImbalance=2.462
+window[20].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[20].maxQueueDepth=2
+window[20].queueDepthImbalance=1.939
+window[21].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[21].maxQueueDepth=3
+window[21].queueDepthImbalance=2.824
+window[22].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[22].maxQueueDepth=3
+window[22].queueDepthImbalance=2.743
+window[23].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[23].maxQueueDepth=2
+window[23].queueDepthImbalance=1.939
+window[24].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[24].maxQueueDepth=2
+window[24].queueDepthImbalance=1.939
+window[25].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[25].maxQueueDepth=2
+window[25].queueDepthImbalance=1.778
+window[26].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[26].maxQueueDepth=7
+window[26].queueDepthImbalance=5.895
+window[27].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[27].maxQueueDepth=1
+window[27].queueDepthImbalance=1.000
+window[28].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[28].maxQueueDepth=2
+window[28].queueDepthImbalance=1.778
+window[29].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[29].maxQueueDepth=2
+window[29].queueDepthImbalance=1.882
+window[30].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[30].maxQueueDepth=2
+window[30].queueDepthImbalance=1.882
+window[31].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[31].maxQueueDepth=2
+window[31].queueDepthImbalance=1.829
+window[32].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[32].maxQueueDepth=2
+window[32].queueDepthImbalance=1.730
+window[33].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[33].maxQueueDepth=1
+window[33].queueDepthImbalance=1.000
+window[34].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[34].maxQueueDepth=2
+window[34].queueDepthImbalance=1.778
+window[35].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[35].maxQueueDepth=4
+window[35].queueDepthImbalance=3.368
+window[36].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[36].maxQueueDepth=2
+window[36].queueDepthImbalance=1.778
+window[37].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[37].maxQueueDepth=2
+window[37].queueDepthImbalance=1.882
+window[38].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[38].maxQueueDepth=5
+window[38].queueDepthImbalance=4.211
+window[39].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[39].maxQueueDepth=1
+window[39].queueDepthImbalance=1.000
+window[40].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[40].maxQueueDepth=13
+window[40].queueDepthImbalance=9.455
+window[41].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[41].maxQueueDepth=1
+window[41].queueDepthImbalance=1.000
+window[42].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[42].maxQueueDepth=2
+window[42].queueDepthImbalance=1.730
+window[43].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[43].maxQueueDepth=2
+window[43].queueDepthImbalance=1.939
+window[44].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[44].maxQueueDepth=1
+window[44].queueDepthImbalance=1.000
+window[45].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[45].maxQueueDepth=3
+window[45].queueDepthImbalance=2.824
+window[46].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[46].maxQueueDepth=2
+window[46].queueDepthImbalance=1.939
+window[47].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[47].maxQueueDepth=2
+window[47].queueDepthImbalance=1.939
+window[48].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[48].maxQueueDepth=2
+window[48].queueDepthImbalance=1.939
+window[49].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[49].maxQueueDepth=2
+window[49].queueDepthImbalance=1.939
+window[50].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[50].maxQueueDepth=1
+window[50].queueDepthImbalance=1.000
+window[51].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[51].maxQueueDepth=2
+window[51].queueDepthImbalance=1.939
+window[52].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[52].maxQueueDepth=2
+window[52].queueDepthImbalance=1.882
+window[53].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[53].maxQueueDepth=2
+window[53].queueDepthImbalance=1.939
+window[54].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[54].maxQueueDepth=1
+window[54].queueDepthImbalance=1.000
+window[55].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[55].maxQueueDepth=2
+window[55].queueDepthImbalance=1.882
+window[56].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[56].maxQueueDepth=2
+window[56].queueDepthImbalance=1.882
+window[57].completedPerWorker.min=14336, mean=14336.0, max=14336, maxOverMin=1.000, worstWorker=0
+window[57].maxQueueDepth=9
+window[57].queueDepthImbalance=5.647
+window[58].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[58].maxQueueDepth=6
+window[58].queueDepthImbalance=5.053
+window[59].completedPerWorker.min=13312, mean=13312.0, max=13312, maxOverMin=1.000, worstWorker=0
+window[59].maxQueueDepth=2
+window[59].queueDepthImbalance=1.939
+
+=== Diagnostics: window correlation ===
+window[0].worstQueue=14
+window[0].worstQueue.maxQueueDepth=8
+window[0].worker.completedDelta=12288
+window[0].worker.execAvgMs=0.055
+window[0].worker.slowTasksDelta=0
+window[0].worker.maxSlowBurstDelta=0
+window[0].worker.queueWaitAvgMs=0.013
+window[1].worstQueue=0
+window[1].worstQueue.maxQueueDepth=1
+window[1].worker.completedDelta=14336
+window[1].worker.execAvgMs=0.048
+window[1].worker.slowTasksDelta=0
+window[1].worker.maxSlowBurstDelta=0
+window[1].worker.queueWaitAvgMs=0.008
+window[2].worstQueue=20
+window[2].worstQueue.maxQueueDepth=2
+window[2].worker.completedDelta=13312
+window[2].worker.execAvgMs=0.051
+window[2].worker.slowTasksDelta=1
+window[2].worker.maxSlowBurstDelta=1
+window[2].worker.queueWaitAvgMs=0.011
+window[3].worstQueue=29
+window[3].worstQueue.maxQueueDepth=2
+window[3].worker.completedDelta=13312
+window[3].worker.execAvgMs=0.052
+window[3].worker.slowTasksDelta=1
+window[3].worker.maxSlowBurstDelta=0
+window[3].worker.queueWaitAvgMs=0.011
+window[4].worstQueue=11
+window[4].worstQueue.maxQueueDepth=2
+window[4].worker.completedDelta=14336
+window[4].worker.execAvgMs=0.051
+window[4].worker.slowTasksDelta=0
+window[4].worker.maxSlowBurstDelta=0
+window[4].worker.queueWaitAvgMs=0.009
+window[5].worstQueue=0
+window[5].worstQueue.maxQueueDepth=1
+window[5].worker.completedDelta=14336
+window[5].worker.execAvgMs=0.049
+window[5].worker.slowTasksDelta=0
+window[5].worker.maxSlowBurstDelta=0
+window[5].worker.queueWaitAvgMs=0.008
+window[6].worstQueue=18
+window[6].worstQueue.maxQueueDepth=8
+window[6].worker.completedDelta=13312
+window[6].worker.execAvgMs=0.054
+window[6].worker.slowTasksDelta=0
+window[6].worker.maxSlowBurstDelta=0
+window[6].worker.queueWaitAvgMs=0.012
+window[7].worstQueue=5
+window[7].worstQueue.maxQueueDepth=2
+window[7].worker.completedDelta=14336
+window[7].worker.execAvgMs=0.051
+window[7].worker.slowTasksDelta=1
+window[7].worker.maxSlowBurstDelta=0
+window[7].worker.queueWaitAvgMs=0.011
+window[8].worstQueue=0
+window[8].worstQueue.maxQueueDepth=1
+window[8].worker.completedDelta=14336
+window[8].worker.execAvgMs=0.053
+window[8].worker.slowTasksDelta=0
+window[8].worker.maxSlowBurstDelta=0
+window[8].worker.queueWaitAvgMs=0.009
+window[9].worstQueue=15
+window[9].worstQueue.maxQueueDepth=6
+window[9].worker.completedDelta=13312
+window[9].worker.execAvgMs=0.052
+window[9].worker.slowTasksDelta=0
+window[9].worker.maxSlowBurstDelta=0
+window[9].worker.queueWaitAvgMs=0.012
+window[10].worstQueue=12
+window[10].worstQueue.maxQueueDepth=2
+window[10].worker.completedDelta=14336
+window[10].worker.execAvgMs=0.049
+window[10].worker.slowTasksDelta=1
+window[10].worker.maxSlowBurstDelta=0
+window[10].worker.queueWaitAvgMs=0.008
+window[11].worstQueue=15
+window[11].worstQueue.maxQueueDepth=3
+window[11].worker.completedDelta=13312
+window[11].worker.execAvgMs=0.052
+window[11].worker.slowTasksDelta=0
+window[11].worker.maxSlowBurstDelta=0
+window[11].worker.queueWaitAvgMs=0.012
+window[12].worstQueue=30
+window[12].worstQueue.maxQueueDepth=3
+window[12].worker.completedDelta=14336
+window[12].worker.execAvgMs=0.051
+window[12].worker.slowTasksDelta=1
+window[12].worker.maxSlowBurstDelta=0
+window[12].worker.queueWaitAvgMs=0.010
+window[13].worstQueue=12
+window[13].worstQueue.maxQueueDepth=8
+window[13].worker.completedDelta=13312
+window[13].worker.execAvgMs=0.055
+window[13].worker.slowTasksDelta=0
+window[13].worker.maxSlowBurstDelta=0
+window[13].worker.queueWaitAvgMs=0.010
+window[14].worstQueue=3
+window[14].worstQueue.maxQueueDepth=2
+window[14].worker.completedDelta=14336
+window[14].worker.execAvgMs=0.050
+window[14].worker.slowTasksDelta=1
+window[14].worker.maxSlowBurstDelta=0
+window[14].worker.queueWaitAvgMs=0.011
+window[15].worstQueue=3
+window[15].worstQueue.maxQueueDepth=2
+window[15].worker.completedDelta=13312
+window[15].worker.execAvgMs=0.052
+window[15].worker.slowTasksDelta=0
+window[15].worker.maxSlowBurstDelta=0
+window[15].worker.queueWaitAvgMs=0.011
+window[16].worstQueue=16
+window[16].worstQueue.maxQueueDepth=2
+window[16].worker.completedDelta=14336
+window[16].worker.execAvgMs=0.050
+window[16].worker.slowTasksDelta=2
+window[16].worker.maxSlowBurstDelta=0
+window[16].worker.queueWaitAvgMs=0.010
+window[17].worstQueue=0
+window[17].worstQueue.maxQueueDepth=1
+window[17].worker.completedDelta=13312
+window[17].worker.execAvgMs=0.051
+window[17].worker.slowTasksDelta=0
+window[17].worker.maxSlowBurstDelta=0
+window[17].worker.queueWaitAvgMs=0.008
+window[18].worstQueue=2
+window[18].worstQueue.maxQueueDepth=2
+window[18].worker.completedDelta=13312
+window[18].worker.execAvgMs=0.051
+window[18].worker.slowTasksDelta=0
+window[18].worker.maxSlowBurstDelta=0
+window[18].worker.queueWaitAvgMs=0.010
+window[19].worstQueue=6
+window[19].worstQueue.maxQueueDepth=3
+window[19].worker.completedDelta=13312
+window[19].worker.execAvgMs=0.053
+window[19].worker.slowTasksDelta=1
+window[19].worker.maxSlowBurstDelta=0
+window[19].worker.queueWaitAvgMs=0.009
+window[20].worstQueue=18
+window[20].worstQueue.maxQueueDepth=2
+window[20].worker.completedDelta=14336
+window[20].worker.execAvgMs=0.048
+window[20].worker.slowTasksDelta=0
+window[20].worker.maxSlowBurstDelta=0
+window[20].worker.queueWaitAvgMs=0.011
+window[21].worstQueue=30
+window[21].worstQueue.maxQueueDepth=3
+window[21].worker.completedDelta=13312
+window[21].worker.execAvgMs=0.053
+window[21].worker.slowTasksDelta=1
+window[21].worker.maxSlowBurstDelta=0
+window[21].worker.queueWaitAvgMs=0.012
+window[22].worstQueue=6
+window[22].worstQueue.maxQueueDepth=3
+window[22].worker.completedDelta=13312
+window[22].worker.execAvgMs=0.055
+window[22].worker.slowTasksDelta=0
+window[22].worker.maxSlowBurstDelta=0
+window[22].worker.queueWaitAvgMs=0.011
+window[23].worstQueue=30
+window[23].worstQueue.maxQueueDepth=2
+window[23].worker.completedDelta=14336
+window[23].worker.execAvgMs=0.049
+window[23].worker.slowTasksDelta=0
+window[23].worker.maxSlowBurstDelta=0
+window[23].worker.queueWaitAvgMs=0.010
+window[24].worstQueue=30
+window[24].worstQueue.maxQueueDepth=2
+window[24].worker.completedDelta=14336
+window[24].worker.execAvgMs=0.049
+window[24].worker.slowTasksDelta=0
+window[24].worker.maxSlowBurstDelta=0
+window[24].worker.queueWaitAvgMs=0.011
+window[25].worstQueue=15
+window[25].worstQueue.maxQueueDepth=2
+window[25].worker.completedDelta=13312
+window[25].worker.execAvgMs=0.050
+window[25].worker.slowTasksDelta=0
+window[25].worker.maxSlowBurstDelta=0
+window[25].worker.queueWaitAvgMs=0.010
+window[26].worstQueue=27
+window[26].worstQueue.maxQueueDepth=7
+window[26].worker.completedDelta=13312
+window[26].worker.execAvgMs=0.055
+window[26].worker.slowTasksDelta=2
+window[26].worker.maxSlowBurstDelta=0
+window[26].worker.queueWaitAvgMs=0.013
+window[27].worstQueue=0
+window[27].worstQueue.maxQueueDepth=1
+window[27].worker.completedDelta=14336
+window[27].worker.execAvgMs=0.049
+window[27].worker.slowTasksDelta=0
+window[27].worker.maxSlowBurstDelta=0
+window[27].worker.queueWaitAvgMs=0.008
+window[28].worstQueue=0
+window[28].worstQueue.maxQueueDepth=2
+window[28].worker.completedDelta=13312
+window[28].worker.execAvgMs=0.052
+window[28].worker.slowTasksDelta=1
+window[28].worker.maxSlowBurstDelta=0
+window[28].worker.queueWaitAvgMs=0.010
+window[29].worstQueue=8
+window[29].worstQueue.maxQueueDepth=2
+window[29].worker.completedDelta=13312
+window[29].worker.execAvgMs=0.056
+window[29].worker.slowTasksDelta=2
+window[29].worker.maxSlowBurstDelta=0
+window[29].worker.queueWaitAvgMs=0.011
+window[30].worstQueue=2
+window[30].worstQueue.maxQueueDepth=2
+window[30].worker.completedDelta=14336
+window[30].worker.execAvgMs=0.048
+window[30].worker.slowTasksDelta=0
+window[30].worker.maxSlowBurstDelta=0
+window[30].worker.queueWaitAvgMs=0.010
+window[31].worstQueue=3
+window[31].worstQueue.maxQueueDepth=2
+window[31].worker.completedDelta=13312
+window[31].worker.execAvgMs=0.053
+window[31].worker.slowTasksDelta=0
+window[31].worker.maxSlowBurstDelta=0
+window[31].worker.queueWaitAvgMs=0.009
+window[32].worstQueue=2
+window[32].worstQueue.maxQueueDepth=2
+window[32].worker.completedDelta=14336
+window[32].worker.execAvgMs=0.050
+window[32].worker.slowTasksDelta=0
+window[32].worker.maxSlowBurstDelta=0
+window[32].worker.queueWaitAvgMs=0.010
+window[33].worstQueue=0
+window[33].worstQueue.maxQueueDepth=1
+window[33].worker.completedDelta=13312
+window[33].worker.execAvgMs=0.056
+window[33].worker.slowTasksDelta=0
+window[33].worker.maxSlowBurstDelta=0
+window[33].worker.queueWaitAvgMs=0.010
+window[34].worstQueue=1
+window[34].worstQueue.maxQueueDepth=2
+window[34].worker.completedDelta=14336
+window[34].worker.execAvgMs=0.050
+window[34].worker.slowTasksDelta=0
+window[34].worker.maxSlowBurstDelta=0
+window[34].worker.queueWaitAvgMs=0.011
+window[35].worstQueue=26
+window[35].worstQueue.maxQueueDepth=4
+window[35].worker.completedDelta=14336
+window[35].worker.execAvgMs=0.052
+window[35].worker.slowTasksDelta=1
+window[35].worker.maxSlowBurstDelta=0
+window[35].worker.queueWaitAvgMs=0.011
+window[36].worstQueue=0
+window[36].worstQueue.maxQueueDepth=2
+window[36].worker.completedDelta=13312
+window[36].worker.execAvgMs=0.056
+window[36].worker.slowTasksDelta=0
+window[36].worker.maxSlowBurstDelta=0
+window[36].worker.queueWaitAvgMs=0.010
+window[37].worstQueue=4
+window[37].worstQueue.maxQueueDepth=2
+window[37].worker.completedDelta=14336
+window[37].worker.execAvgMs=0.049
+window[37].worker.slowTasksDelta=0
+window[37].worker.maxSlowBurstDelta=0
+window[37].worker.queueWaitAvgMs=0.011
+window[38].worstQueue=20
+window[38].worstQueue.maxQueueDepth=5
+window[38].worker.completedDelta=14336
+window[38].worker.execAvgMs=0.051
+window[38].worker.slowTasksDelta=0
+window[38].worker.maxSlowBurstDelta=0
+window[38].worker.queueWaitAvgMs=0.011
+window[39].worstQueue=0
+window[39].worstQueue.maxQueueDepth=1
+window[39].worker.completedDelta=13312
+window[39].worker.execAvgMs=0.057
+window[39].worker.slowTasksDelta=0
+window[39].worker.maxSlowBurstDelta=0
+window[39].worker.queueWaitAvgMs=0.011
+window[40].worstQueue=23
+window[40].worstQueue.maxQueueDepth=13
+window[40].worker.completedDelta=14336
+window[40].worker.execAvgMs=0.049
+window[40].worker.slowTasksDelta=0
+window[40].worker.maxSlowBurstDelta=0
+window[40].worker.queueWaitAvgMs=0.008
+window[41].worstQueue=0
+window[41].worstQueue.maxQueueDepth=1
+window[41].worker.completedDelta=14336
+window[41].worker.execAvgMs=0.049
+window[41].worker.slowTasksDelta=0
+window[41].worker.maxSlowBurstDelta=0
+window[41].worker.queueWaitAvgMs=0.008
+window[42].worstQueue=1
+window[42].worstQueue.maxQueueDepth=2
+window[42].worker.completedDelta=13312
+window[42].worker.execAvgMs=0.053
+window[42].worker.slowTasksDelta=0
+window[42].worker.maxSlowBurstDelta=0
+window[42].worker.queueWaitAvgMs=0.012
+window[43].worstQueue=16
+window[43].worstQueue.maxQueueDepth=2
+window[43].worker.completedDelta=14336
+window[43].worker.execAvgMs=0.050
+window[43].worker.slowTasksDelta=0
+window[43].worker.maxSlowBurstDelta=0
+window[43].worker.queueWaitAvgMs=0.009
+window[44].worstQueue=0
+window[44].worstQueue.maxQueueDepth=1
+window[44].worker.completedDelta=13312
+window[44].worker.execAvgMs=0.052
+window[44].worker.slowTasksDelta=0
+window[44].worker.maxSlowBurstDelta=0
+window[44].worker.queueWaitAvgMs=0.009
+window[45].worstQueue=30
+window[45].worstQueue.maxQueueDepth=3
+window[45].worker.completedDelta=14336
+window[45].worker.execAvgMs=0.050
+window[45].worker.slowTasksDelta=0
+window[45].worker.maxSlowBurstDelta=0
+window[45].worker.queueWaitAvgMs=0.010
+window[46].worstQueue=31
+window[46].worstQueue.maxQueueDepth=2
+window[46].worker.completedDelta=14336
+window[46].worker.execAvgMs=0.052
+window[46].worker.slowTasksDelta=1
+window[46].worker.maxSlowBurstDelta=0
+window[46].worker.queueWaitAvgMs=0.011
+window[47].worstQueue=13
+window[47].worstQueue.maxQueueDepth=2
+window[47].worker.completedDelta=13312
+window[47].worker.execAvgMs=0.055
+window[47].worker.slowTasksDelta=0
+window[47].worker.maxSlowBurstDelta=0
+window[47].worker.queueWaitAvgMs=0.012
+window[48].worstQueue=10
+window[48].worstQueue.maxQueueDepth=2
+window[48].worker.completedDelta=14336
+window[48].worker.execAvgMs=0.049
+window[48].worker.slowTasksDelta=0
+window[48].worker.maxSlowBurstDelta=0
+window[48].worker.queueWaitAvgMs=0.008
+window[49].worstQueue=31
+window[49].worstQueue.maxQueueDepth=2
+window[49].worker.completedDelta=14336
+window[49].worker.execAvgMs=0.050
+window[49].worker.slowTasksDelta=0
+window[49].worker.maxSlowBurstDelta=0
+window[49].worker.queueWaitAvgMs=0.009
+window[50].worstQueue=0
+window[50].worstQueue.maxQueueDepth=1
+window[50].worker.completedDelta=13312
+window[50].worker.execAvgMs=0.056
+window[50].worker.slowTasksDelta=0
+window[50].worker.maxSlowBurstDelta=0
+window[50].worker.queueWaitAvgMs=0.010
+window[51].worstQueue=17
+window[51].worstQueue.maxQueueDepth=2
+window[51].worker.completedDelta=13312
+window[51].worker.execAvgMs=0.052
+window[51].worker.slowTasksDelta=0
+window[51].worker.maxSlowBurstDelta=0
+window[51].worker.queueWaitAvgMs=0.008
+window[52].worstQueue=7
+window[52].worstQueue.maxQueueDepth=2
+window[52].worker.completedDelta=14336
+window[52].worker.execAvgMs=0.050
+window[52].worker.slowTasksDelta=0
+window[52].worker.maxSlowBurstDelta=0
+window[52].worker.queueWaitAvgMs=0.010
+window[53].worstQueue=10
+window[53].worstQueue.maxQueueDepth=2
+window[53].worker.completedDelta=13312
+window[53].worker.execAvgMs=0.054
+window[53].worker.slowTasksDelta=0
+window[53].worker.maxSlowBurstDelta=0
+window[53].worker.queueWaitAvgMs=0.010
+window[54].worstQueue=0
+window[54].worstQueue.maxQueueDepth=1
+window[54].worker.completedDelta=13312
+window[54].worker.execAvgMs=0.051
+window[54].worker.slowTasksDelta=0
+window[54].worker.maxSlowBurstDelta=0
+window[54].worker.queueWaitAvgMs=0.008
+window[55].worstQueue=4
+window[55].worstQueue.maxQueueDepth=2
+window[55].worker.completedDelta=13312
+window[55].worker.execAvgMs=0.050
+window[55].worker.slowTasksDelta=0
+window[55].worker.maxSlowBurstDelta=0
+window[55].worker.queueWaitAvgMs=0.010
+window[56].worstQueue=12
+window[56].worstQueue.maxQueueDepth=2
+window[56].worker.completedDelta=13312
+window[56].worker.execAvgMs=0.052
+window[56].worker.slowTasksDelta=0
+window[56].worker.maxSlowBurstDelta=0
+window[56].worker.queueWaitAvgMs=0.012
+window[57].worstQueue=11
+window[57].worstQueue.maxQueueDepth=9
+window[57].worker.completedDelta=14336
+window[57].worker.execAvgMs=0.048
+window[57].worker.slowTasksDelta=0
+window[57].worker.maxSlowBurstDelta=0
+window[57].worker.queueWaitAvgMs=0.011
+window[58].worstQueue=0
+window[58].worstQueue.maxQueueDepth=6
+window[58].worker.completedDelta=13312
+window[58].worker.execAvgMs=0.054
+window[58].worker.slowTasksDelta=2
+window[58].worker.maxSlowBurstDelta=0
+window[58].worker.queueWaitAvgMs=0.011
+window[59].worstQueue=11
+window[59].worstQueue.maxQueueDepth=2
+window[59].worker.completedDelta=13312
+window[59].worker.execAvgMs=0.051
+window[59].worker.slowTasksDelta=0
+window[59].worker.maxSlowBurstDelta=0
+window[59].worker.queueWaitAvgMs=0.011
+
+correlation.queueDepth_vs_execAvg=0.095
+correlation.queueDepth_vs_slowTasksDelta=0.091
+correlation.queueDepth_vs_completedDelta=-0.109
+correlation.queueDepth_vs_queueWaitAvg=0.283

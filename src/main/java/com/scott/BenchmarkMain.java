@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -722,6 +723,16 @@ public class BenchmarkMain {
             //    before dispatcher shutdown in the finally block.
             if (dispatcher instanceof ShardedOnlyDispatcher d) {
                 d.executor().printQueueDistribution();
+            }
+
+            // 6b. Diagnostic: inter-task gap analysis (when diagnostics enabled).
+            //     Explains where time is spent between finishing one task and starting
+            //     the next, distinguishing poll latency, empty queue waits, and queue depth.
+            //     Appends to summary so output is written to summary_shared.txt or summary_sharded.txt
+            if (workerStats != null && workerStats.length > 0) {
+                List<WorkerStats> statsList = Arrays.asList(workerStats);
+                String gapDiag = new InterTaskGapReporter(statsList, null).generateDiagnostics();
+                summary.append(gapDiag);
             }
 
             // 7. DIAGNOSTIC: tail-latency / drain-accounting sanity check.

@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+JDK17_HOME="/usr/lib/jvm/java-17-openjdk-17.0.18.0.8-2.el9.x86_64"
+JDK25_HOME="/usr/lib/jvm/java-25-openjdk"
+
+usage() {
+    echo "Usage: $0 {17|25|status}"
+    exit 1
+}
+
+show_status() {
+    echo "JAVA_HOME=${JAVA_HOME:-not set}"
+    echo "java path:  $(readlink -f "$(command -v java)")"
+    echo "javac path: $(readlink -f "$(command -v javac)")"
+    echo
+
+    java -version
+    javac -version
+}
+
+switch_java() {
+    local version="$1"
+    local java_home
+
+    case "$version" in
+        17)
+            java_home="$JDK17_HOME"
+            ;;
+        25)
+            java_home="$JDK25_HOME"
+            ;;
+        *)
+            usage
+            ;;
+    esac
+
+    if [[ ! -x "$java_home/bin/java" ]]; then
+        echo "Error: java not found at:"
+        echo "  $java_home/bin/java"
+        exit 1
+    fi
+
+    if [[ ! -x "$java_home/bin/javac" ]]; then
+        echo "Error: javac not found at:"
+        echo "  $java_home/bin/javac"
+        exit 1
+    fi
+
+    echo "Switching system Java to JDK $version..."
+
+    alternatives --set java "$java_home/bin/java"
+    alternatives --set javac "$java_home/bin/javac"
+
+    export JAVA_HOME="$java_home"
+    export PATH="$JAVA_HOME/bin:$PATH"
+
+    echo
+    echo "Successfully switched to JDK $version."
+    echo
+    show_status
+}
+
+case "${1:-}" in
+    17|25)
+        switch_java "$1"
+        ;;
+    status)
+        show_status
+        ;;
+    *)
+        usage
+        ;;
+esac

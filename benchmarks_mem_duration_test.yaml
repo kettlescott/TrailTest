@@ -1,0 +1,67 @@
+global:
+  workerCount: 8
+  maxInflight: 16
+  seed: 3735928559
+  warmupSeconds: 1
+  measurementSeconds: 2
+  taskCount: 0
+
+workloads:
+  # Memory-bound task with duration-controlled mode (50 microseconds target)
+  mem_50us:
+    - kind: MEMORY
+      targetMicros: 50
+      ratio: 1.0
+      memory:
+        accessPattern: RANDOM
+        bufferMB: 64
+        writeBack: false
+
+  # Memory-bound task with duration-controlled mode (100 microseconds target)
+  mem_100us:
+    - kind: MEMORY
+      targetMicros: 100
+      ratio: 1.0
+      memory:
+        accessPattern: RANDOM
+        bufferMB: 64
+        writeBack: false
+
+  # Memory-bound task with duration-controlled mode (300 microseconds target)
+  mem_300us:
+    - kind: MEMORY
+      targetMicros: 300
+      ratio: 1.0
+      memory:
+        accessPattern: RANDOM
+        bufferMB: 64
+        writeBack: false
+
+profiling:
+  enabled: false
+
+diagnostics:
+  enabled: false
+
+runs:
+  - name: test_mem_50us_duration_controlled
+    mode: shared
+    workload: mem_50us
+    enabled: true
+    pinning:
+      enabled: false
+
+  - name: test_mem_100us_duration_controlled
+    mode: shared
+    workload: mem_100us
+    enabled: true
+    pinning:
+      enabled: false
+
+  - name: test_mem_300us_duration_controlled
+    mode: shared
+    workload: mem_300us
+    enabled: true
+    pinning:
+      enabled: false
+

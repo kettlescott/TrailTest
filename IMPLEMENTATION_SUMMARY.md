@@ -97,7 +97,7 @@ java -cp target/TrailSystem-1.0-SNAPSHOT-all.jar \
   com.scott.BenchmarkMain --config benchmarks_sharded_mem_artifact_D.yaml
 ```
 
-Results in `results/sharded_mem_artifact_{A,B,C,D}_*/` directories.
+Results in `backup/results` directories.
 
 ### Analyze Results
 

@@ -39,8 +39,8 @@ public final class TaskGenerator {
      * <ul>
      *   <li>CPU    — {@code cpuIterations} populated; memory fields zero/null</li>
      *   <li>MEMORY — {@code memorySteps}, {@code memoryBufferMB},
-     *               {@code memoryAccessPattern}, {@code memoryWriteBack}
-     *               populated; {@code cpuIterations} = 0</li>
+     *               {@code memoryAccessPattern}, {@code memoryWriteBack},
+     *               {@code memoryMode} populated; {@code cpuIterations} = 0</li>
      *   <li>IO     — all fields zero/null (no calibration; parkNanos)</li>
      * </ul>
      */
@@ -54,7 +54,9 @@ public final class TaskGenerator {
             int memoryBufferMB,
             MemoryBoundWorkload.AccessPattern memoryAccessPattern,
             boolean memoryWriteBack,
-            boolean fixedMemorySteps
+            boolean fixedMemorySteps,
+            long targetMicros,
+            String memoryMode
     ) {
         public String summary() {
             return switch (kind) {
@@ -62,12 +64,24 @@ public final class TaskGenerator {
                         "name=%s, kind=CPU, targetMillis=%d, cpuIterations=%d%s",
                         name, targetMillis, cpuIterations,
                         fixedCpuIterations ? "  (fixed; calibration bypassed)" : "");
-                case MEMORY -> String.format(
-                        "name=%s, kind=MEMORY, targetMillis=%d, memorySteps=%d%s, "
-                                + "bufferMB=%d, accessPattern=%s, writeBack=%s",
-                        name, targetMillis, memorySteps,
-                        fixedMemorySteps ? " (fixed)" : "",
-                        memoryBufferMB, memoryAccessPattern, memoryWriteBack);
+                case MEMORY -> {
+                    StringBuilder sb = new StringBuilder();
+                    sb.append("name=").append(name)
+                      .append(", kind=MEMORY, targetMillis=").append(targetMillis);
+                    if (targetMicros > 0) {
+                        sb.append(", targetMicros=").append(targetMicros);
+                    }
+                    if ("DURATION_CONTROLLED".equals(memoryMode)) {
+                        sb.append(", mode=DURATION_CONTROLLED");
+                    } else {
+                        sb.append(", memorySteps=").append(memorySteps);
+                        if (fixedMemorySteps) sb.append(" (fixed)");
+                    }
+                    sb.append(", bufferMB=").append(memoryBufferMB)
+                      .append(", accessPattern=").append(memoryAccessPattern)
+                      .append(", writeBack=").append(memoryWriteBack);
+                    yield sb.toString();
+                }
                 case IO     -> String.format(
                         "name=%s, kind=IO, targetMillis=%d  (no calibration; parkNanos)",
                         name, targetMillis);
@@ -82,6 +96,8 @@ public final class TaskGenerator {
         final long[] memoryBuffer;                              // MEMORY only (shared)
         final MemoryBoundWorkload.AccessPattern memoryPattern;  // MEMORY only
         final boolean memoryWriteBack;                          // MEMORY only
+        final long memoryTargetMicros;                          // MEMORY duration-controlled only
+        final String memoryMode;                                // "FIXED_STEP" or "DURATION_CONTROLLED"
 
         EntryState(WorkloadEntry entry, long baseSeed) {
             this.entry = entry;
@@ -102,6 +118,8 @@ public final class TaskGenerator {
                     this.memoryBuffer    = null;
                     this.memoryPattern   = null;
                     this.memoryWriteBack = false;
+                    this.memoryTargetMicros = 0L;
+                    this.memoryMode = null;
                 }
                 case MEMORY -> {
                     MemoryWorkloadConfig mem = entry.memoryOrDefaults();
@@ -109,15 +127,25 @@ public final class TaskGenerator {
                     this.memoryBuffer    = buf;
                     this.memoryPattern   = mem.accessPattern();
                     this.memoryWriteBack = mem.writeBack();
-                    // Fixed-step mode (memorySteps > 0) bypasses the
-                    // calibrator entirely, mirroring CPU's cpuIterations
-                    // fast-path. Otherwise fall back to the existing
-                    // targetMillis-driven calibration.
-                    if (entry.memorySteps() > 0) {
+
+                    // Determine mode: duration-controlled or fixed-step
+                    // Precedence: targetMicros > memorySteps > targetMillis
+                    if (entry.targetMicros() > 0) {
+                        // Duration-controlled mode
+                        this.memoryMode = "DURATION_CONTROLLED";
+                        this.memoryTargetMicros = entry.targetMicros();
+                        this.memorySteps = 0;
+                    } else if (entry.memorySteps() > 0) {
+                        // Fixed-step mode
+                        this.memoryMode = "FIXED_STEP";
                         this.memorySteps = entry.memorySteps();
+                        this.memoryTargetMicros = 0L;
                     } else {
+                        // Calibrated mode (legacy targetMillis)
+                        this.memoryMode = "FIXED_STEP";
                         this.memorySteps = WorkloadCalibrator.calibrateMemorySteps(
                                 targetNanos, buf, this.memoryPattern, this.memoryWriteBack, baseSeed);
+                        this.memoryTargetMicros = 0L;
                     }
                     this.cpuIterations   = 0;
                 }
@@ -127,6 +155,8 @@ public final class TaskGenerator {
                     this.memoryBuffer    = null;
                     this.memoryPattern   = null;
                     this.memoryWriteBack = false;
+                    this.memoryTargetMicros = 0L;
+                    this.memoryMode = null;
                 }
                 default -> throw new IllegalStateException("Unknown WorkloadKind: " + entry.kind());
             }
@@ -463,10 +493,35 @@ public final class TaskGenerator {
     private Workload createWorkload(EntryState es, long taskSeed) {
         return switch (es.entry.kind()) {
             case CPU    -> new CpuBoundWorkload(taskSeed, es.cpuIterations);
-            case MEMORY -> new MemoryBoundWorkload(
-                    es.memoryBuffer, es.memorySteps, es.memoryPattern, taskSeed, es.memoryWriteBack);
+            case MEMORY -> {
+                if ("DURATION_CONTROLLED".equals(es.memoryMode)) {
+                    yield new MemoryBoundWorkloadDuration(
+                            es.memoryBuffer, es.memoryTargetMicros, es.memoryPattern, 
+                            taskSeed, es.memoryWriteBack, 8);
+                } else {
+                    yield new MemoryBoundWorkload(
+                            es.memoryBuffer, es.memorySteps, es.memoryPattern, taskSeed, es.memoryWriteBack);
+                }
+            }
             case IO     -> new SyntheticBlockingIOWorkload(es.entry.targetMillis(), taskSeed);
         };
+    }
+
+    /**
+     * Public test helper: creates a workload for the specified entry index.
+     * Used by tests to verify workload creation without task generation.
+     * 
+     * @param entryIndex index into the workload entries list
+     * @return the created Workload
+     */
+    public Workload createWorkload(int entryIndex) {
+        if (entryIndex < 0 || entryIndex >= states.length) {
+            throw new IndexOutOfBoundsException(
+                    "Entry index " + entryIndex + " out of range [0," + states.length + ")");
+        }
+        EntryState es = states[entryIndex];
+        long taskSeed = seed + entryIndex;
+        return createWorkload(es, taskSeed);
     }
 
     private EntryState selectEntry(long taskId) {
@@ -512,7 +567,9 @@ public final class TaskGenerator {
                     bufferMB,
                     s.memoryPattern,
                     s.memoryWriteBack,
-                    s.entry.usesFixedMemorySteps()));
+                    s.entry.usesFixedMemorySteps(),
+                    s.memoryTargetMicros,
+                    s.memoryMode));
         }
         return out;
     }

@@ -35,7 +35,7 @@ for cfg in A B C D; do
 done
 ```
 
-Results appear in `results/sharded_mem_artifact_{A,B,C,D}_*/ `
+Results appear in `backup/results`
 
 ---
 

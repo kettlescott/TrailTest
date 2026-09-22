@@ -1,0 +1,114 @@
+global:
+  workerCount: 32
+  maxInflight: 32
+  seed: 3735928559
+  warmupSeconds: 10
+  measurementSeconds: 60
+  taskCount: 0
+
+workloads:
+  # Duration-controlled MEMORY workloads
+  # These use targetMicros instead of memorySteps,
+  # providing stable execution time across queue counts
+  mem_50us:
+    - kind: MEMORY
+      targetMicros: 50
+      ratio: 1.0
+      memory:
+        accessPattern: RANDOM
+        bufferMB: 512
+        writeBack: false
+
+  mem_100us:
+    - kind: MEMORY
+      targetMicros: 100
+      ratio: 1.0
+      memory:
+        accessPattern: RANDOM
+        bufferMB: 512
+        writeBack: false
+
+  mem_300us:
+    - kind: MEMORY
+      targetMicros: 300
+      ratio: 1.0
+      memory:
+        accessPattern: RANDOM
+        bufferMB: 512
+        writeBack: false
+
+profiling:
+  enabled: true
+  control: api
+  settings: profile
+  captureLocks: true
+  lockEventThreshold: 10us
+  start: beforeMeasurement
+  stop: afterMeasurement
+  filename: "${runName}.jfr"
+  startCommand: "JFR.start name=${runName} settings=${settings} filename=${outputFile}"
+  stopCommand: "JFR.stop name=${runName} filename=${outputFile}"
+
+  perf:
+    enabled: true
+    binary: perf
+    frequency: 99
+    clock: monotonic
+    callGraph: dwarf
+    mmapPages: 2048
+    extraArgs:
+      - "--no-buildid"
+      - "--no-buildid-cache"
+      - "-z"
+      - "-e"
+      - "cycles,instructions,cache-references,cache-misses,LLC-loads,LLC-load-misses"
+      - "-e"
+      - "context-switches,cpu-migrations"
+    filename: "${runName}.perf.data"
+    enablePerfStat: true
+    perfStatFilename: "${runName}.perf.stat.txt"
+    perfStatEvents:
+      - cycles
+      - instructions
+      - branches
+      - branch-misses
+      - cache-references
+      - cache-misses
+      - LLC-loads
+      - LLC-load-misses
+      - context-switches
+      - cpu-migrations
+      - page-faults
+      - task-clock
+
+diagnostics:
+  enabled: true
+  perWorkerLatency: false
+  queueDepthByShard: true
+  windowSampling: true
+  windowCorrelation: true
+  windowSeconds: 1
+  slowExecutionMicros: 200
+
+runs:
+  - name: shared_mem_50us_duration
+    mode: shared
+    workload: mem_50us
+    enabled: true
+    pinning:
+      enabled: false
+
+  - name: shared_mem_100us_duration
+    mode: shared
+    workload: mem_100us
+    enabled: true
+    pinning:
+      enabled: false
+
+  - name: shared_mem_300us_duration
+    mode: shared
+    workload: mem_300us
+    enabled: true
+    pinning:
+      enabled: false
+

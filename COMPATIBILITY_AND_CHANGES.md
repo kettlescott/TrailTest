@@ -256,7 +256,7 @@ Or rely on auto-enable when enabling shard CSV diagnostics.
    done
    ```
 
-3. **Analyze** `results/<runName>/summary_sharded.txt` and `per_shard_latency.csv`:
+3. **Analyze** `backup/results` and `per_shard_latency.csv`:
    - If shard differences shrink between A→B: routing was an artifact
    - If differences shrink between B→C: workload seed was an artifact
    - If differences shrink between C→D: blackhole contention was an artifact

@@ -83,8 +83,8 @@ LLC-loads,LLC-load-misses,cpu-migrations,context-switches true
 | Hyper-V / WSL2 | 整个 PMU 不可用 | 和 VM 同问题 |
 
 > **`cpu-migrations` 和 `context-switches` 是 software events**，和 PMU 无关。
-> 如果它们也缺，几乎一定是**录制失败**（perf 根本没跑起来）——
-> 看 `results/<run>/<run>.perf.log` 里有无 `event ... not supported` 或
+> 如果它们也缺，几乎一定是 **录制失败**（perf 根本没跑起来）——
+> 看 `../backup/results` 里有无 `event ... not supported` 或
 > `permission denied` 行，或者文件根本不存在 → 走 `HOW_TO_RUN.md` 里的
 > "perf exited immediately" 那一条修。
 
@@ -336,7 +336,7 @@ bash tools/compare_perf.sh
 
 ## 附：一键全量分析
 
-把上面 6 张表一次性生成到 `results/analysis_report.txt`：
+把上面 6 张表一次性生成到 `../backup/results`：
 
 ```bash
 #!/bin/bash

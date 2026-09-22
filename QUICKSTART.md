@@ -36,7 +36,7 @@ java -cp target/TrailSystem-1.0-SNAPSHOT-all.jar com.scott.BenchmarkMain \
   --config benchmarks_sharded_mem_artifact_D.yaml
 ```
 
-Results appear in `results/sharded_mem_artifact_{A,B,C,D}_*`.
+Results appear in `backup/results`.
 
 ---
 
@@ -44,7 +44,7 @@ Results appear in `results/sharded_mem_artifact_{A,B,C,D}_*`.
 
 ### Per-Run Summary
 
-Each run produces `results/<runName>/summary_sharded.txt`. Look for:
+Each run produces `backup/results`. Look for:
 
 ```
 shardedRouting.mode=...
@@ -67,7 +67,7 @@ diagnostics:
   shardLatencyCsv: true
 ```
 
-Produces `results/<runName>/per_shard_latency.csv` with columns:
+Produces `backup/results` with columns:
 
 ```
 shardId,workerId,coreId,processedCount,

@@ -30,5 +30,5 @@ java -Xms1g -Xmx1g --enable-preview -cp "target/classes:$CP" com.scott.Benchmark
 
 ## Output
 
-- `results/<runName>/summary.txt`
-- `results/<runName>/<runName>.jfr` (when profiling is enabled)
+- `backup/results`
+- `backup/results` (when profiling is enabled)

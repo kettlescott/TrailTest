@@ -8,12 +8,14 @@ import java.util.Map;
  * <p>Describes a single resource-shaped task class:
  * <ul>
  *   <li>{@code kind}         — CPU | MEMORY | IO</li>
- *   <li>{@code targetMillis} — desired wall-clock execution time per task</li>
+ *   <li>{@code targetMillis} — desired wall-clock execution time per task (milliseconds)</li>
+ *   <li>{@code targetMicros} — alternative to targetMillis for finer granularity (microseconds);
+ *       if both are set, targetMicros takes precedence for MEMORY duration-controlled mode</li>
  *   <li>{@code ratio}        — fraction of generated tasks (entries within
  *       a workload sum to ≈ 1.0)</li>
  *   <li>{@code name}         — optional human-readable label for output</li>
  *   <li>{@code memory}       — optional MEMORY-kind config (access pattern,
- *       buffer size, writeBack); ignored unless {@code kind == MEMORY}</li>
+ *       buffer size, writeBack, memoryMode); ignored unless {@code kind == MEMORY}</li>
  * </ul>
  */
 public record WorkloadEntry(
@@ -23,25 +25,27 @@ public record WorkloadEntry(
         double ratio,
         MemoryWorkloadConfig memory,
         int cpuIterations,
-        int memorySteps
+        int memorySteps,
+        long targetMicros
 ) {
 
     /** Backwards-compatible constructor: no MEMORY config, no fixed cpuIterations. */
     public WorkloadEntry(String name, WorkloadKind kind, long targetMillis, double ratio) {
-        this(name, kind, targetMillis, ratio, null, 0, 0);
+        this(name, kind, targetMillis, ratio, null, 0, 0, 0);
     }
 
     /** Backwards-compatible constructor: explicit MEMORY config, no fixed cpuIterations. */
     public WorkloadEntry(String name, WorkloadKind kind, long targetMillis, double ratio,
                          MemoryWorkloadConfig memory) {
-        this(name, kind, targetMillis, ratio, memory, 0, 0);
+        this(name, kind, targetMillis, ratio, memory, 0, 0, 0);
     }
 
     /** Backwards-compatible constructor: pre-memorySteps callers. */
     public WorkloadEntry(String name, WorkloadKind kind, long targetMillis, double ratio,
                          MemoryWorkloadConfig memory, int cpuIterations) {
-        this(name, kind, targetMillis, ratio, memory, cpuIterations, 0);
+        this(name, kind, targetMillis, ratio, memory, cpuIterations, 0, 0);
     }
+
 
     public WorkloadEntry {
         if (kind == null) {
@@ -55,14 +59,21 @@ public record WorkloadEntry(
             throw new IllegalArgumentException(
                     "memorySteps is only valid for MEMORY workloads");
         }
-        // targetMillis is required UNLESS calibration is bypassed via a
-        // fixed-iteration CPU entry or a fixed-step MEMORY entry. In
-        // those cases targetMillis becomes a display-only label and may
-        // be 0 / omitted from YAML.
-        if (targetMillis <= 0 && cpuIterations <= 0 && memorySteps <= 0) {
+        if (targetMicros > 0 && kind != WorkloadKind.MEMORY) {
+            throw new IllegalArgumentException(
+                    "targetMicros is only valid for MEMORY workloads");
+        }
+        // targetMillis is required UNLESS calibration is bypassed via:
+        // - fixed-iteration CPU entry (cpuIterations > 0)
+        // - fixed-step MEMORY entry (memorySteps > 0)
+        // - duration-controlled MEMORY entry (targetMicros > 0)
+        boolean isCpuFixed = cpuIterations > 0;
+        boolean isMemoryFixed = memorySteps > 0;
+        boolean isDurationControlled = targetMicros > 0;
+        if (targetMillis <= 0 && !isCpuFixed && !isMemoryFixed && !isDurationControlled) {
             throw new IllegalArgumentException(
                     "workload entry: targetMillis must be > 0 "
-                            + "(or set cpuIterations > 0 for CPU / memorySteps > 0 for MEMORY)");
+                            + "(or set cpuIterations > 0 for CPU / memorySteps > 0 for MEMORY / targetMicros > 0 for MEMORY duration-controlled)");
         }
         if (ratio <= 0.0 || !Double.isFinite(ratio)) {
             throw new IllegalArgumentException("workload entry: ratio must be > 0");
@@ -112,19 +123,26 @@ public record WorkloadEntry(
         Object msRaw = em.get("memorySteps");
         int memorySteps = msRaw == null ? 0 : Integer.parseInt(String.valueOf(msRaw));
 
-        // targetMillis is optional only when calibration is bypassed via
-        // cpuIterations (CPU) or memorySteps (MEMORY).
+        // Optional targetMicros for fine-grained MEMORY duration control
+        Object tmicro = em.get("targetMicros");
+        long targetMicros = tmicro == null ? 0L : Long.parseLong(String.valueOf(tmicro));
+
+        // targetMillis is optional when calibration is bypassed via:
+        // - cpuIterations (CPU)
+        // - memorySteps (MEMORY)
+        // - targetMicros (MEMORY duration-controlled)
         Object tm = em.get("targetMillis");
         long targetMillis;
         if (tm != null) {
             targetMillis = Long.parseLong(String.valueOf(tm));
-        } else if (cpuIterations > 0 || memorySteps > 0) {
+        } else if (cpuIterations > 0 || memorySteps > 0 || targetMicros > 0) {
             targetMillis = 0L;
         } else {
             throw new IllegalArgumentException(
                     path + ".targetMillis is required "
-                            + "(or set cpuIterations > 0 for CPU / memorySteps > 0 for MEMORY)");
+                            + "(or set cpuIterations > 0 for CPU / memorySteps > 0 for MEMORY / targetMicros > 0 for MEMORY duration-controlled)");
         }
+
         Object r = em.get("ratio");
         double ratio = r == null ? 1.0 : Double.parseDouble(String.valueOf(r));
 
@@ -141,7 +159,7 @@ public record WorkloadEntry(
             }
         }
 
-        return new WorkloadEntry(name, kind, targetMillis, ratio, memory, cpuIterations, memorySteps);
+        return new WorkloadEntry(name, kind, targetMillis, ratio, memory, cpuIterations, memorySteps, targetMicros);
     }
 
     private static MemoryWorkloadConfig parseMemory(Map<String, Object> mm, String path) {

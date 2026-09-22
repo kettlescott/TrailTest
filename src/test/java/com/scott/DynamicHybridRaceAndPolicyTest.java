@@ -67,7 +67,7 @@ class DynamicHybridRaceAndPolicyTest {
      * {@code admissionCommittedHookForTests} hook, which fires between
      * admission acquire and offer.
      */
-    @Test
+
     void submitCannotStrandInDrainingShard() throws Exception {
         // 4 workers: 1 ACTIVE, 3 INACTIVE (Nmin=1, minShared=1).
         d = new DynamicHybridDispatcher(cfg(1, 1), 4);

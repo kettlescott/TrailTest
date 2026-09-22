@@ -103,7 +103,7 @@ Expected: All four run successfully with per-run output showing the knob values.
 
 ### Per-Run Summary File
 
-Each run produces `results/<runName>/summary_sharded.txt` with new lines:
+Each run produces `backup/results` with new lines:
 
 ```
 shardedRouting.mode=MODULO              # or MIXED_HASH
@@ -144,10 +144,10 @@ done
 ```
 
 Results appear in:
-- `results/sharded_mem_artifact_A_baseline/`
-- `results/sharded_mem_artifact_B_mixedRouting/`
-- `results/sharded_mem_artifact_C_mixedRoutingSeed/`
-- `results/sharded_mem_artifact_D_mixedAll_tlSink/`
+- `backup/results`
+- `backup/results`
+- `backup/results`
+- `backup/results`
 
 ### Step 2: Extract Summary Knobs
 

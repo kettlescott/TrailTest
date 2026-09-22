@@ -50,6 +50,15 @@ public final class Task implements Runnable {
      */
     private long routingKey;
 
+    // ---- Inter-task gap diagnostics (SharedExecutor only) ----
+    // These fields are populated by SharedExecutor.beforeExecute/afterExecute
+    // to track time gaps between tasks. Not used by ShardedWorker path.
+    long _gapStartNs;                 // timestamp when gap recording started
+    long _prevFinishNs;               // timestamp when previous task finished
+    long _emptyQueueNsEstimate;       // estimated time spent waiting on empty queue
+    long _nonEmptyQueueNsEstimate;    // estimated time spent dequeuing from populated queue
+
+
     public Task(long taskId,
                 WorkloadKind workloadKind,
                 long targetMillis,

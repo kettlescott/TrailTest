@@ -27,7 +27,7 @@ class ShardImbalanceTest {
     private static final ShardedRoutingConfig ROUTING = ShardedRoutingConfig.defaults();
 
     private static TaskGenerator newGen(double alpha, int hot, long seed) {
-        WorkloadEntry e = new WorkloadEntry("t", WorkloadKind.CPU, 1L, 1.0, null, 1, 0);
+        WorkloadEntry e = new WorkloadEntry("t", WorkloadKind.CPU, 1L, 1.0, null, 1, 0, 0);
         WorkloadConfig wc = new WorkloadConfig(java.util.List.of(e));
         return new TaskGenerator(
                 wc, 0L, WorkloadSeedMode.SEQUENTIAL_TASK_ID, 0L,
@@ -36,7 +36,7 @@ class ShardImbalanceTest {
     }
 
     private static TaskGenerator newLegacyGen() {
-        WorkloadEntry e = new WorkloadEntry("t", WorkloadKind.CPU, 1L, 1.0, null, 1, 0);
+        WorkloadEntry e = new WorkloadEntry("t", WorkloadKind.CPU, 1L, 1.0, null, 1, 0, 0);
         WorkloadConfig wc = new WorkloadConfig(java.util.List.of(e));
         return new TaskGenerator(wc, 0L, WorkloadSeedMode.SEQUENTIAL_TASK_ID, 0L,
                 null, 0, null);
@@ -165,7 +165,7 @@ class ShardImbalanceTest {
     void n32_theoreticalHotFractions_match() {
         final int N32 = 32;
         final int M   = 100_000;
-        WorkloadEntry e = new WorkloadEntry("t", WorkloadKind.CPU, 1L, 1.0, null, 1, 0);
+        WorkloadEntry e = new WorkloadEntry("t", WorkloadKind.CPU, 1L, 1.0, null, 1, 0, 0);
         WorkloadConfig wc = new WorkloadConfig(java.util.List.of(e));
         double[] alphas   = {0.0,     0.2,   0.4,     0.6,    0.8,     1.0};
         double[] expected = {0.03125, 0.225, 0.41875, 0.6125, 0.80625, 1.0};

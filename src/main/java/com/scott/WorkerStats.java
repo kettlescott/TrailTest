@@ -61,10 +61,17 @@ final class WorkerStats {
     /* Optional per-worker histogram (full percentiles). */
     final LatencyRecorder histogram;   // null when perWorkerLatency=false
 
+    /* Optional per-worker inter-task gap diagnostics. */
+    final InterTaskGapDiagnostics gapDiags;  // null when diagnostics disabled
+
     WorkerStats(long slowThresholdNs, boolean perWorkerLatency, int expectedTasksHint) {
         this.slowThresholdNs = slowThresholdNs;
         this.histogram = perWorkerLatency
                 ? new LatencyRecorder(Math.max(1024, expectedTasksHint))
+                : null;
+        // Allocate gap diagnostics if perWorkerLatency is enabled (uses same histogram allocation hint)
+        this.gapDiags = perWorkerLatency
+                ? new InterTaskGapDiagnostics(Math.max(1024, expectedTasksHint))
                 : null;
     }
 
@@ -112,6 +119,22 @@ final class WorkerStats {
     }
 
     /**
+     * Records inter-task gap metrics when gap diagnostics are enabled.
+     * Called by the worker thread between dequeue and task execution.
+     *
+     * @param gapNs         time from previousTaskFinish to currentTaskStart
+     * @param pollNs        time spent dequeuing
+     * @param emptyQueueNs  time waiting when queue was empty
+     * @param nonEmptyQueueNs time spent dequeuing when queue was non-empty
+     * @param executionNs   task execution time
+     */
+    void recordInterTaskGap(long gapNs, long pollNs, long emptyQueueNs, long nonEmptyQueueNs, long executionNs) {
+        if (gapDiags != null) {
+            gapDiags.recordInterTaskGap(gapNs, pollNs, emptyQueueNs, nonEmptyQueueNs, executionNs);
+        }
+    }
+
+    /**
      * Publishes the final processed count so the post-drain summary
      * pass and the final window snapshot see it. Called once after
      * the worker has finished all measurement tasks.
@@ -122,5 +145,8 @@ final class WorkerStats {
 
     /** Snapshot processed count for window sampling (volatile read). */
     long processedCount() { return publishedProcessed; }
+
+    /** Access gap diagnostics (for post-run reporting). */
+    InterTaskGapDiagnostics gapDiagnostics() { return gapDiags; }
 }
 
