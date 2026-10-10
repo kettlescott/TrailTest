@@ -1,9 +1,0 @@
-shardId,windows,corr_execP95_vs_depth_t,corr_execP95_vs_depth_tPlus1,corr_execP99_vs_qwP99_tPlus1,corr_execP95_vs_throughput_t,corr_execP95_vs_backlogDelta_t,corr_backlogDelta_vs_depth_tPlus1
-0,601,0.006,-0.005,0.084,0.995,0.000,0.000
-1,601,0.007,-0.011,-0.032,0.995,nan,nan
-2,601,0.005,-0.015,0.027,0.995,nan,nan
-3,601,0.006,-0.015,0.223,0.995,-0.000,0.000
-4,601,0.009,0.161,0.082,0.995,0.000,0.000
-5,601,0.007,0.220,0.010,0.995,nan,nan
-6,601,-0.014,-0.012,0.012,-0.058,0.008,0.000
-7,601,0.006,-0.009,0.051,0.995,nan,nan
