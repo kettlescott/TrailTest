@@ -24,8 +24,9 @@ class DurationFileTaskSourceTest {
         assertEquals(50L, source.nextDurationMicros());
         assertEquals(100L, source.nextDurationMicros());
         assertEquals(200L, source.nextDurationMicros());
-        assertEquals(-1L, source.nextDurationMicros());
-        assertEquals(-1L, source.nextDurationMicros());
+        // Should cycle back to start
+        assertEquals(50L, source.nextDurationMicros());
+        assertEquals(100L, source.nextDurationMicros());
     }
 
     @Test
@@ -111,6 +112,23 @@ class DurationFileTaskSourceTest {
     }
 
     @Test
+    @DisplayName("Should cycle back to start when EOF is reached")
+    void testCyclicReading(@TempDir Path tempDir) throws Exception {
+        Path durFile = tempDir.resolve("durations.txt");
+        Files.write(durFile, List.of("100", "200", "300"));
+        
+        DurationFileTaskSource source = new DurationFileTaskSource(durFile);
+        // Read all 3 durations
+        assertEquals(100L, source.nextDurationMicros());
+        assertEquals(200L, source.nextDurationMicros());
+        assertEquals(300L, source.nextDurationMicros());
+        // Should cycle back to start
+        assertEquals(100L, source.nextDurationMicros());
+        assertEquals(200L, source.nextDurationMicros());
+        assertEquals(300L, source.nextDurationMicros());
+    }
+
+    @Test
     @DisplayName("Should support reset")
     void testReset(@TempDir Path tempDir) throws Exception {
         Path durFile = tempDir.resolve("durations.txt");
@@ -119,9 +137,11 @@ class DurationFileTaskSourceTest {
         DurationFileTaskSource source = new DurationFileTaskSource(durFile);
         source.nextDurationMicros();
         source.nextDurationMicros();
-        assertEquals(-1L, source.nextDurationMicros());
+        // After 2 reads, next should cycle back
+        assertEquals(10L, source.nextDurationMicros());
         
         source.reset();
+        assertEquals(0, source.tasksRead());
         assertEquals(10L, source.nextDurationMicros());
     }
 

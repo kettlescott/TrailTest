@@ -351,7 +351,7 @@ public final class BenchmarkConfigLoader {
             out.add(new WorkloadEntry(
                     e.name(), e.kind(), e.targetMillis(),
                     e.ratio() / sum, e.memory(), e.cpuIterations(), e.memorySteps(),
-                    e.targetMicros()));
+                    e.targetMicros(), e.durationFile()));
         }
         return out;
     }

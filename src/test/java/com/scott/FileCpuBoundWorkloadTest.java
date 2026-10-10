@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class FileCpuBoundWorkloadTest {
 
     @Test
-    @DisplayName("Should execute with durations from file")
+    @DisplayName("Should execute with durations from file, cycling when EOF is reached")
     void testExecuteWithFileDurations(@TempDir Path tempDir) throws Exception {
         Path durFile = tempDir.resolve("durations.txt");
         Files.write(durFile, List.of("50", "100"));
@@ -29,12 +29,14 @@ class FileCpuBoundWorkloadTest {
         long result2 = w2.execute();
         assertNotEquals(0, result2);
         
+        // After reading all durations, it should cycle back to the start
         FileCpuBoundWorkload w3 = new FileCpuBoundWorkload(source, 12347L, 8);
-        assertThrows(IllegalStateException.class, w3::execute);
+        long result3 = w3.execute();
+        assertNotEquals(0, result3);
     }
 
     @Test
-    @DisplayName("Should throw IllegalStateException at EOF")
+    @DisplayName("Should cycle back to start after exhausting durations")
     void testThrowsAtEof(@TempDir Path tempDir) throws Exception {
         Path durFile = tempDir.resolve("single.txt");
         Files.write(durFile, List.of("50"));
@@ -42,8 +44,12 @@ class FileCpuBoundWorkloadTest {
         DurationFileTaskSource source = new DurationFileTaskSource(durFile);
         FileCpuBoundWorkload w = new FileCpuBoundWorkload(source, 12345L, 8);
         
-        w.execute();
-        assertThrows(IllegalStateException.class, w::execute);
+        long result1 = w.execute();
+        assertNotEquals(0, result1);
+        
+        // After first execution, should cycle back
+        long result2 = w.execute();
+        assertNotEquals(0, result2);
     }
 
     @Test

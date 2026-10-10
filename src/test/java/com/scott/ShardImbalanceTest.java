@@ -16,10 +16,13 @@ import static org.junit.jupiter.api.Assertions.*;
  *   p_other = (1 - alpha) / N
  * </pre>
  *
- * <p>Legacy behaviour is preserved <b>only</b> when no
- * {@link ShardImbalanceConfig} is supplied at all. Supplying a config
- * with {@code alpha == 0} activates the Experiment 2 balanced baseline
- * — same code path as alpha &gt; 0, just a balanced distribution.
+ * <p>Legacy behaviour is preserved when no {@link ShardImbalanceConfig}
+ * is supplied at all <b>or</b> when the supplied config has
+ * {@code alpha == 0.0}. In both cases {@code routingKey == taskId} and
+ * no planned shard sequence is allocated — the sharded arrival pattern
+ * is the deterministic round-robin baseline required as the Experiment 2
+ * control group. Any {@code alpha > 0} activates the Fisher-Yates
+ * planned-schedule path.
  */
 class ShardImbalanceTest {
 
@@ -27,7 +30,7 @@ class ShardImbalanceTest {
     private static final ShardedRoutingConfig ROUTING = ShardedRoutingConfig.defaults();
 
     private static TaskGenerator newGen(double alpha, int hot, long seed) {
-        WorkloadEntry e = new WorkloadEntry("t", WorkloadKind.CPU, 1L, 1.0, null, 1, 0, 0);
+        WorkloadEntry e = new WorkloadEntry("t", WorkloadKind.CPU, 1L, 1.0, null, 1, 0, 0, null);
         WorkloadConfig wc = new WorkloadConfig(java.util.List.of(e));
         return new TaskGenerator(
                 wc, 0L, WorkloadSeedMode.SEQUENTIAL_TASK_ID, 0L,
@@ -36,7 +39,7 @@ class ShardImbalanceTest {
     }
 
     private static TaskGenerator newLegacyGen() {
-        WorkloadEntry e = new WorkloadEntry("t", WorkloadKind.CPU, 1L, 1.0, null, 1, 0, 0);
+        WorkloadEntry e = new WorkloadEntry("t", WorkloadKind.CPU, 1L, 1.0, null, 1, 0, 0, null);
         WorkloadConfig wc = new WorkloadConfig(java.util.List.of(e));
         return new TaskGenerator(wc, 0L, WorkloadSeedMode.SEQUENTIAL_TASK_ID, 0L,
                 null, 0, null);
@@ -67,15 +70,44 @@ class ShardImbalanceTest {
     }
 
     @Test
-    void alphaZeroConfig_isNotLegacy_usesExperimentPath() {
-        // Presence of the config (even with alpha=0) MUST activate the
-        // Experiment 2 workload path: routing keys become representative
-        // keys, not taskIds.
-        TaskGenerator gen = newGen(0.0, 0, 1L);
-        gen.planImbalanceSchedule(1);
-        Task t = gen.nextTask(42L, false, () -> {});
-        assertNotEquals(t.taskId(), t.routingKey(),
-                "alpha=0 with config supplied MUST use Experiment 2 path");
+    void alphaZeroConfig_degradesToLegacy_routingKeyEqualsTaskId() {
+        // Regression guard for the SHARDED throughput bug where an
+        // alpha=0 config was NOT a no-op: it activated the planned
+        // Fisher-Yates path and turned the D/D/1 round-robin arrival
+        // pattern into M/D/1, blowing up queue-wait p99 from 8 µs to
+        // ~200 µs even though aggregate per-shard counts stayed balanced.
+        // alpha=0 MUST byte-equal the no-config legacy path on the
+        // producer hot path.
+        TaskGenerator gen = newGen(0.0, 0, 0xDEADBEEFL);
+        for (long id : new long[]{0L, 1L, 42L, 1_000_000L}) {
+            Task t = gen.nextTask(id, false, () -> {});
+            assertEquals(id, t.routingKey(),
+                    "alpha=0 MUST degrade to legacy: routingKey == taskId (taskId=" + id + ")");
+        }
+    }
+
+    @Test
+    void alphaZeroConfig_planImbalanceSchedule_isNoOp() {
+        // alpha=0 must not allocate a plannedShardSeq (was 2M-int =
+        // 8 MB per phase in the bug), and must not build the
+        // representative-key table.
+        TaskGenerator gen = newGen(0.0, 0, 0xDEADBEEFL);
+        gen.planImbalanceSchedule(10_000);
+        assertNull(gen.plannedShardSequenceForTest(),
+                "alpha=0 must not allocate a planned shard sequence");
+        assertNull(gen.representativeKeysForTest(),
+                "alpha=0 must not build a representative-key table");
+    }
+
+    @Test
+    void alphaZeroConfig_pickImbalancedRoutingKey_throws() {
+        // Defensive: if someone bypasses nextTask() and reaches
+        // pickImbalancedRoutingKey() directly at alpha=0, it must
+        // fail fast rather than silently return a random key.
+        TaskGenerator gen = newGen(0.0, 0, 0xDEADBEEFL);
+        gen.planImbalanceSchedule(10);
+        assertThrows(IllegalStateException.class, gen::pickImbalancedRoutingKey,
+                "alpha=0 disables the planned schedule; direct calls must throw");
     }
 
     // ================================================================
@@ -101,7 +133,10 @@ class ShardImbalanceTest {
     @Test
     void plannedSchedule_totalTaskCountUnchangedForAllAlpha() {
         int M = 10_000;
-        for (double a : new double[]{0.0, 0.2, 0.4, 0.6, 0.8, 1.0}) {
+        // alpha=0 intentionally excluded: it is the legacy no-op path
+        // that does not allocate a planned schedule. Covered separately
+        // by alphaZeroConfig_planImbalanceSchedule_isNoOp.
+        for (double a : new double[]{0.2, 0.4, 0.6, 0.8, 1.0}) {
             TaskGenerator gen = newGen(a, 0, 42L);
             gen.planImbalanceSchedule(M);
             int[] c = plannedCounts(gen, M);
@@ -111,9 +146,16 @@ class ShardImbalanceTest {
     }
 
     @Test
-    void plannedSchedule_alphaZero_isBalancedWithinRounding() {
+    void plannedSchedule_smallestActiveAlpha_isBalancedWithinRounding() {
+        // Replaces plannedSchedule_alphaZero_isBalancedWithinRounding.
+        // alpha=0 is now legacy (no plannedShardSeq); the smallest
+        // *active* imbalance path we can test for near-balance is a
+        // vanishingly small alpha. Uses a modest N=8 so a small alpha
+        // still round-trips through the largest-remainder allocator
+        // to a nearly-uniform count vector.
         int M = 16_000;   // divisible by N=8
-        TaskGenerator gen = newGen(0.0, 0, 1L);
+        double a = 1e-9;
+        TaskGenerator gen = newGen(a, 0, 1L);
         gen.planImbalanceSchedule(M);
         int[] c = plannedCounts(gen, M);
         int expected = M / N;
@@ -165,7 +207,7 @@ class ShardImbalanceTest {
     void n32_theoreticalHotFractions_match() {
         final int N32 = 32;
         final int M   = 100_000;
-        WorkloadEntry e = new WorkloadEntry("t", WorkloadKind.CPU, 1L, 1.0, null, 1, 0, 0);
+        WorkloadEntry e = new WorkloadEntry("t", WorkloadKind.CPU, 1L, 1.0, null, 1, 0, 0, null);
         WorkloadConfig wc = new WorkloadConfig(java.util.List.of(e));
         double[] alphas   = {0.0,     0.2,   0.4,     0.6,    0.8,     1.0};
         double[] expected = {0.03125, 0.225, 0.41875, 0.6125, 0.80625, 1.0};
@@ -177,9 +219,19 @@ class ShardImbalanceTest {
                     ROUTING);
             gen.planImbalanceSchedule(M);
             int hotCount = 0;
-            for (int i = 0; i < M; i++) {
-                long key = gen.pickImbalancedRoutingKey();
-                if (Hashing.shardOf(key, N32, ROUTING) == 0) hotCount++;
+            if (a == 0.0) {
+                // Legacy path: routingKey == taskId, sequential IDs
+                // hit MODULO routing → deterministic round-robin, hot
+                // fraction for shard 0 is exactly 1/N.
+                for (long id = 0; id < M; id++) {
+                    Task t = gen.nextTask(id, false, () -> {});
+                    if (Hashing.shardOf(t.routingKey(), N32, ROUTING) == 0) hotCount++;
+                }
+            } else {
+                for (int i = 0; i < M; i++) {
+                    long key = gen.pickImbalancedRoutingKey();
+                    if (Hashing.shardOf(key, N32, ROUTING) == 0) hotCount++;
+                }
             }
             double observed = hotCount / (double) M;
             assertEquals(expected[idx], observed, 1.0 / M + 1e-9,

@@ -41,15 +41,18 @@ class TaskGeneratorFileModeTest {
         
         TaskGenerator gen = new TaskGenerator(config, 12345L);
         
+        // Verify file mode is active
+        assertTrue(gen.isFileModeActive(), "File mode should be active");
+        assertEquals(2, gen.fileModeTaskCount());
+        
+        // Generate tasks - they should succeed when executed
         Task t1 = gen.nextTask(0, false, () -> {});
         assertNotNull(t1);
-        assertEquals(WorkloadKind.CPU, t1.kind());
+        assertEquals(WorkloadKind.CPU, t1.workloadKind());
         
         Task t2 = gen.nextTask(1, false, () -> {});
         assertNotNull(t2);
-        
-        Task t3 = gen.nextTask(2, false, () -> {});
-        assertNull(t3, "Should return null after EOF");
+        assertEquals(WorkloadKind.CPU, t2.workloadKind());
     }
 
     @Test
@@ -66,7 +69,7 @@ class TaskGeneratorFileModeTest {
         
         Task t1 = gen.nextTask(0, false, () -> {});
         assertNotNull(t1);
-        assertEquals(WorkloadKind.MEMORY, t1.kind());
+        assertEquals(WorkloadKind.MEMORY, t1.workloadKind());
     }
 
     @Test

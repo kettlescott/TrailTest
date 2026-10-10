@@ -8,8 +8,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Reads task durations (in microseconds) from a file sequentially.
+ * Reads task durations (in microseconds) from a file cyclically.
  * Format: one duration per line, in microseconds (long). Skips empty lines and lines starting with #.
+ * Cycles back to start when EOF is reached using modulo.
  * Thread-safe with synchronized access to nextDurationMicros().
  */
 public final class DurationFileTaskSource {
@@ -59,12 +60,16 @@ public final class DurationFileTaskSource {
         }
     }
 
-    /** Returns next duration in µs, or -1 if EOF. Synchronized for thread-safety. */
+    /** Returns next duration in µs, cycling back to start when EOF is reached. */
     public synchronized long nextDurationMicros() {
-        if (nextIndex >= durations.size()) {
-            return -1L;
-        }
-        return durations.get(nextIndex++);
+        long result = durations.get(nextIndex);
+        nextIndex = (nextIndex + 1) % durations.size();
+        return result;
+    }
+
+    /** Peeks at next duration without consuming it. */
+    public synchronized long peekNextDurationMicros() {
+        return durations.get(nextIndex);
     }
 
     public int totalTasks() {

@@ -26,24 +26,25 @@ public record WorkloadEntry(
         MemoryWorkloadConfig memory,
         int cpuIterations,
         int memorySteps,
-        long targetMicros
+        long targetMicros,
+        String durationFile
 ) {
 
     /** Backwards-compatible constructor: no MEMORY config, no fixed cpuIterations. */
     public WorkloadEntry(String name, WorkloadKind kind, long targetMillis, double ratio) {
-        this(name, kind, targetMillis, ratio, null, 0, 0, 0);
+        this(name, kind, targetMillis, ratio, null, 0, 0, 0, null);
     }
 
     /** Backwards-compatible constructor: explicit MEMORY config, no fixed cpuIterations. */
     public WorkloadEntry(String name, WorkloadKind kind, long targetMillis, double ratio,
                          MemoryWorkloadConfig memory) {
-        this(name, kind, targetMillis, ratio, memory, 0, 0, 0);
+        this(name, kind, targetMillis, ratio, memory, 0, 0, 0, null);
     }
 
     /** Backwards-compatible constructor: pre-memorySteps callers. */
     public WorkloadEntry(String name, WorkloadKind kind, long targetMillis, double ratio,
                          MemoryWorkloadConfig memory, int cpuIterations) {
-        this(name, kind, targetMillis, ratio, memory, cpuIterations, 0, 0);
+        this(name, kind, targetMillis, ratio, memory, cpuIterations, 0, 0, null);
     }
 
 
@@ -51,6 +52,32 @@ public record WorkloadEntry(
         if (kind == null) {
             throw new IllegalArgumentException("workload entry: kind is required");
         }
+        
+        // NEW: durationFile mode validation (mutually exclusive)
+        boolean hasFile = durationFile != null && !durationFile.isBlank();
+        if (hasFile) {
+            if (ratio != 1.0) {
+                throw new IllegalArgumentException(
+                        "workload entry: when durationFile is used, ratio must be exactly 1.0 (got " + ratio + ")");
+            }
+            if (targetMicros > 0) {
+                throw new IllegalArgumentException(
+                        "workload entry: durationFile and targetMicros are mutually exclusive");
+            }
+            if (targetMillis > 0) {
+                throw new IllegalArgumentException(
+                        "workload entry: durationFile and targetMillis are mutually exclusive");
+            }
+            if (cpuIterations > 0) {
+                throw new IllegalArgumentException(
+                        "workload entry: durationFile and cpuIterations are mutually exclusive");
+            }
+            if (memorySteps > 0) {
+                throw new IllegalArgumentException(
+                        "workload entry: durationFile and memorySteps are mutually exclusive");
+            }
+        }
+        
         if (cpuIterations > 0 && kind != WorkloadKind.CPU) {
             throw new IllegalArgumentException(
                     "cpuIterations is only valid for CPU workloads");
@@ -59,21 +86,24 @@ public record WorkloadEntry(
             throw new IllegalArgumentException(
                     "memorySteps is only valid for MEMORY workloads");
         }
-        if (targetMicros > 0 && kind != WorkloadKind.MEMORY) {
+        if (targetMicros > 0 && kind != WorkloadKind.CPU && kind != WorkloadKind.MEMORY) {
             throw new IllegalArgumentException(
-                    "targetMicros is only valid for MEMORY workloads");
+                    "targetMicros is only valid for CPU or MEMORY workloads");
         }
         // targetMillis is required UNLESS calibration is bypassed via:
         // - fixed-iteration CPU entry (cpuIterations > 0)
+        // - duration-controlled CPU entry (CPU + targetMicros > 0)
         // - fixed-step MEMORY entry (memorySteps > 0)
         // - duration-controlled MEMORY entry (targetMicros > 0)
+        // - file-based entry (durationFile != null)
         boolean isCpuFixed = cpuIterations > 0;
+        boolean isCpuDurationControlled = kind == WorkloadKind.CPU && targetMicros > 0;
         boolean isMemoryFixed = memorySteps > 0;
         boolean isDurationControlled = targetMicros > 0;
-        if (targetMillis <= 0 && !isCpuFixed && !isMemoryFixed && !isDurationControlled) {
+        if (targetMillis <= 0 && !isCpuFixed && !isCpuDurationControlled && !isMemoryFixed && !isDurationControlled && !hasFile) {
             throw new IllegalArgumentException(
                     "workload entry: targetMillis must be > 0 "
-                            + "(or set cpuIterations > 0 for CPU / memorySteps > 0 for MEMORY / targetMicros > 0 for MEMORY duration-controlled)");
+                            + "(or set cpuIterations > 0 for CPU / targetMicros > 0 for CPU duration-controlled / memorySteps > 0 for MEMORY / targetMicros > 0 for MEMORY duration-controlled / durationFile for file-based)");
         }
         if (ratio <= 0.0 || !Double.isFinite(ratio)) {
             throw new IllegalArgumentException("workload entry: ratio must be > 0");
@@ -93,6 +123,11 @@ public record WorkloadEntry(
     public String displayName() {
         if (name != null && !name.isBlank()) return name;
         return kind.name().toLowerCase() + "_" + targetMillis + "ms";
+    }
+
+    /** Returns true if this entry uses durationFile mode. */
+    public boolean usesDurationFile() {
+        return durationFile != null && !durationFile.isBlank();
     }
 
     /** Returns the MEMORY config, falling back to defaults when null. */
@@ -127,6 +162,10 @@ public record WorkloadEntry(
         Object tmicro = em.get("targetMicros");
         long targetMicros = tmicro == null ? 0L : Long.parseLong(String.valueOf(tmicro));
 
+        // Optional durationFile for file-based task durations
+        Object durFileRaw = em.get("durationFile");
+        String durationFile = durFileRaw == null ? null : String.valueOf(durFileRaw);
+
         // targetMillis is optional when calibration is bypassed via:
         // - cpuIterations (CPU)
         // - memorySteps (MEMORY)
@@ -135,12 +174,13 @@ public record WorkloadEntry(
         long targetMillis;
         if (tm != null) {
             targetMillis = Long.parseLong(String.valueOf(tm));
-        } else if (cpuIterations > 0 || memorySteps > 0 || targetMicros > 0) {
+        } else if (cpuIterations > 0 || memorySteps > 0 || targetMicros > 0 || durationFile != null) {
+            // targetMillis is optional when calibration is bypassed or durationFile is used
             targetMillis = 0L;
         } else {
             throw new IllegalArgumentException(
                     path + ".targetMillis is required "
-                            + "(or set cpuIterations > 0 for CPU / memorySteps > 0 for MEMORY / targetMicros > 0 for MEMORY duration-controlled)");
+                            + "(or set cpuIterations > 0 for CPU / memorySteps > 0 for MEMORY / targetMicros > 0 for duration-controlled / durationFile for file-based)");
         }
 
         Object r = em.get("ratio");
@@ -159,7 +199,7 @@ public record WorkloadEntry(
             }
         }
 
-        return new WorkloadEntry(name, kind, targetMillis, ratio, memory, cpuIterations, memorySteps, targetMicros);
+        return new WorkloadEntry(name, kind, targetMillis, ratio, memory, cpuIterations, memorySteps, targetMicros, durationFile);
     }
 
     private static MemoryWorkloadConfig parseMemory(Map<String, Object> mm, String path) {

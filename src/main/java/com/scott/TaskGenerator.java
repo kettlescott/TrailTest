@@ -1,5 +1,7 @@
 package com.scott;
 
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -37,7 +39,7 @@ public final class TaskGenerator {
      *
      * <p>Fields that don't apply to a given {@code kind} are zero / null:
      * <ul>
-     *   <li>CPU    — {@code cpuIterations} populated; memory fields zero/null</li>
+     *   <li>CPU    — {@code cpuIterations} and {@code cpuMode} populated; memory fields zero/null</li>
      *   <li>MEMORY — {@code memorySteps}, {@code memoryBufferMB},
      *               {@code memoryAccessPattern}, {@code memoryWriteBack},
      *               {@code memoryMode} populated; {@code cpuIterations} = 0</li>
@@ -50,6 +52,8 @@ public final class TaskGenerator {
             long targetMillis,
             int cpuIterations,
             boolean fixedCpuIterations,
+            long cpuTargetMicros,
+            String cpuMode,
             int memorySteps,
             int memoryBufferMB,
             MemoryBoundWorkload.AccessPattern memoryAccessPattern,
@@ -60,10 +64,18 @@ public final class TaskGenerator {
     ) {
         public String summary() {
             return switch (kind) {
-                case CPU    -> String.format(
-                        "name=%s, kind=CPU, targetMillis=%d, cpuIterations=%d%s",
-                        name, targetMillis, cpuIterations,
-                        fixedCpuIterations ? "  (fixed; calibration bypassed)" : "");
+                case CPU    -> {
+                    if ("DURATION_CONTROLLED".equals(cpuMode)) {
+                        yield String.format(
+                                "name=%s, kind=CPU, targetMicros=%d, mode=DURATION_CONTROLLED",
+                                name, cpuTargetMicros);
+                    } else {
+                        yield String.format(
+                                "name=%s, kind=CPU, targetMillis=%d, cpuIterations=%d%s",
+                                name, targetMillis, cpuIterations,
+                                fixedCpuIterations ? "  (fixed; calibration bypassed)" : "");
+                    }
+                }
                 case MEMORY -> {
                     StringBuilder sb = new StringBuilder();
                     sb.append("name=").append(name)
@@ -91,7 +103,9 @@ public final class TaskGenerator {
 
     private static final class EntryState {
         final WorkloadEntry entry;
-        final int cpuIterations;                                // CPU only
+        final int cpuIterations;                                // CPU fixed-iteration only
+        final long cpuTargetMicros;                             // CPU duration-controlled only
+        final String cpuMode;                                   // "FIXED_ITERATION" or "DURATION_CONTROLLED"
         final int memorySteps;                                  // MEMORY only
         final long[] memoryBuffer;                              // MEMORY only (shared)
         final MemoryBoundWorkload.AccessPattern memoryPattern;  // MEMORY only
@@ -104,15 +118,28 @@ public final class TaskGenerator {
             long targetNanos = entry.targetMillis() * 1_000_000L;
             switch (entry.kind()) {
                 case CPU -> {
-                    // Fixed-iteration mode (cpuIterations > 0) bypasses the
-                    // calibrator entirely. Otherwise, fall back to the
-                    // existing targetMillis-driven calibration. Resolution
-                    // happens once here at construction so the per-task
-                    // hot path has no extra branching.
-                    if (entry.cpuIterations() > 0) {
+                    // CPU: four modes: fixed-iteration, duration-controlled, file-based, or calibrated
+                    // Precedence: durationFile > cpuIterations > targetMicros > targetMillis
+                    if (entry.usesDurationFile()) {
+                        // File-based mode: duration comes from file at runtime
+                        this.cpuMode = "DURATION_CONTROLLED";
+                        this.cpuIterations = 0;
+                        this.cpuTargetMicros = 0L;  // Will be overridden at execution time
+                    } else if (entry.cpuIterations() > 0) {
+                        // Fixed-iteration mode
+                        this.cpuMode = "FIXED_ITERATION";
                         this.cpuIterations = entry.cpuIterations();
+                        this.cpuTargetMicros = 0L;
+                    } else if (entry.targetMicros() > 0) {
+                        // Duration-controlled mode
+                        this.cpuMode = "DURATION_CONTROLLED";
+                        this.cpuIterations = 0;
+                        this.cpuTargetMicros = entry.targetMicros();
                     } else {
+                        // Calibrated mode (legacy targetMillis)
+                        this.cpuMode = "FIXED_ITERATION";
                         this.cpuIterations = WorkloadCalibrator.calibrateIterations(targetNanos, baseSeed);
+                        this.cpuTargetMicros = 0L;
                     }
                     this.memorySteps     = 0;
                     this.memoryBuffer    = null;
@@ -122,15 +149,24 @@ public final class TaskGenerator {
                     this.memoryMode = null;
                 }
                 case MEMORY -> {
+                    this.cpuIterations = 0;
+                    this.cpuTargetMicros = 0L;
+                    this.cpuMode = null;
+                    
                     MemoryWorkloadConfig mem = entry.memoryOrDefaults();
                     long[] buf = allocateBuffer(mem.bufferLongs(), baseSeed);
                     this.memoryBuffer    = buf;
                     this.memoryPattern   = mem.accessPattern();
                     this.memoryWriteBack = mem.writeBack();
 
-                    // Determine mode: duration-controlled or fixed-step
-                    // Precedence: targetMicros > memorySteps > targetMillis
-                    if (entry.targetMicros() > 0) {
+                    // Determine mode: duration-controlled, fixed-step, file-based, or calibrated
+                    // Precedence: durationFile > targetMicros > memorySteps > targetMillis
+                    if (entry.usesDurationFile()) {
+                        // File-based mode: duration comes from file at runtime
+                        this.memoryMode = "DURATION_CONTROLLED";
+                        this.memoryTargetMicros = 0L;  // Will be overridden at execution time
+                        this.memorySteps = 0;
+                    } else if (entry.targetMicros() > 0) {
                         // Duration-controlled mode
                         this.memoryMode = "DURATION_CONTROLLED";
                         this.memoryTargetMicros = entry.targetMicros();
@@ -147,10 +183,11 @@ public final class TaskGenerator {
                                 targetNanos, buf, this.memoryPattern, this.memoryWriteBack, baseSeed);
                         this.memoryTargetMicros = 0L;
                     }
-                    this.cpuIterations   = 0;
                 }
                 case IO -> {
                     this.cpuIterations   = 0;
+                    this.cpuTargetMicros = 0L;
+                    this.cpuMode = null;
                     this.memorySteps     = 0;
                     this.memoryBuffer    = null;
                     this.memoryPattern   = null;
@@ -179,6 +216,10 @@ public final class TaskGenerator {
     private final double[] cumulative; // normalized cdf, length == states.length
     private final WorkloadSeedMode seedMode;
     private final long workloadSeed;
+    private final Path configDir;  // Directory containing the config file, used to resolve relative durationFile paths
+
+    // NEW: File-mode task generation
+    private final DurationFileTaskSource fileSource;  // null for non-file mode
 
     // ---- Shard-imbalance experiment (Experiment 2) ----
     // Legacy vs Experiment 2 are distinguished ONLY by presence of the
@@ -210,12 +251,24 @@ public final class TaskGenerator {
     private int   plannedIndex;
 
     public TaskGenerator(WorkloadConfig workload, long seed) {
-        this(workload, seed, WorkloadSeedMode.SEQUENTIAL_TASK_ID, 0L);
+        this(workload, seed, WorkloadSeedMode.SEQUENTIAL_TASK_ID, 0L, null);
     }
 
     public TaskGenerator(WorkloadConfig workload, long seed,
                          WorkloadSeedMode seedMode, long workloadSeed) {
-        this(workload, seed, seedMode, workloadSeed, null, 0, null);
+        this(workload, seed, seedMode, workloadSeed, null, 0, null, null);
+    }
+
+    /**
+     * Extended constructor with config directory support for resolving relative durationFile paths.
+     *
+     * @param configDir    directory containing the config file; used to resolve relative durationFile paths.
+     *                     If null, durationFile paths are treated as absolute.
+     */
+    public TaskGenerator(WorkloadConfig workload, long seed,
+                         WorkloadSeedMode seedMode, long workloadSeed,
+                         Path configDir) {
+        this(workload, seed, seedMode, workloadSeed, null, 0, null, configDir);
     }
 
     /**
@@ -238,15 +291,48 @@ public final class TaskGenerator {
                          ShardImbalanceConfig imbalance,
                          int shardCount,
                          ShardedRoutingConfig shardRouting) {
+        this(workload, seed, seedMode, workloadSeed, imbalance, shardCount, shardRouting, null);
+    }
+
+    /**
+     * Extended constructor supporting the shard-imbalance experiment with config directory.
+     *
+     * <p>Pass {@code imbalance == null} to retain legacy behaviour
+     * ({@link Task#routingKey()} stays equal to {@code taskId}).
+     * Any non-null imbalance configuration enables the Experiment 2
+     * workload path, including {@code alpha == 0}, which represents
+     * the balanced experimental baseline. All Experiment 2 alphas —
+     * including 0 — go through the exact same task-generation path;
+     * only the probability distribution changes.
+     *
+     * @param imbalance    experiment configuration; {@code null} means legacy mode
+     * @param shardCount   number of sharded workers (N); must be &gt; 0 when {@code imbalance != null}
+     * @param shardRouting production routing configuration used to precompute per-shard representative keys
+     * @param configDir    directory containing the config file; used to resolve relative durationFile paths.
+     *                     If null, durationFile paths are treated as absolute.
+     */
+    public TaskGenerator(WorkloadConfig workload, long seed,
+                         WorkloadSeedMode seedMode, long workloadSeed,
+                         ShardImbalanceConfig imbalance,
+                         int shardCount,
+                         ShardedRoutingConfig shardRouting,
+                         Path configDir) {
         this.workload = workload;
         this.seed = seed;
         this.seedMode = seedMode == null ? WorkloadSeedMode.SEQUENTIAL_TASK_ID : seedMode;
         this.workloadSeed = workloadSeed;
+        this.configDir = configDir;
 
-        // Presence of the config — NOT alpha > 0 — enables the
-        // Experiment 2 workload path. alpha=0 is a valid balanced
-        // baseline that must share the same code path as alpha>0.
-        boolean imbalanceOn = imbalance != null;
+        // alpha == 0 MUST be a complete no-op that degenerates to the
+        // legacy baseline (routingKey == taskId, no planned schedule,
+        // no representative-key table). Sharing the imbalance code
+        // path at alpha=0 replaces the deterministic round-robin
+        // arrival pattern with a Fisher-Yates-randomised one, which
+        // shifts the per-shard queueing regime from D/D/1 to M/D/1
+        // and invalidates the Experiment 2 control group even though
+        // aggregate per-shard task counts remain balanced.
+        // See TaskGeneratorImbalanceAlphaZeroTest.
+        boolean imbalanceOn = imbalance != null && imbalance.alpha() > 0.0;
         this.imbalance = imbalanceOn ? imbalance : null;
         this.shardCount = imbalanceOn ? shardCount : 0;
         ShardedRoutingConfig effectiveRouting = imbalanceOn
@@ -280,6 +366,34 @@ public final class TaskGenerator {
         }
         // Guard against floating-point drift on the last bucket.
         cumulative[cumulative.length - 1] = 1.0;
+
+        // NEW: Check for file-based entries and load file
+        int fileEntryIdx = -1;
+        for (int i = 0; i < entries.size(); i++) {
+            if (entries.get(i).usesDurationFile()) {
+                fileEntryIdx = i;
+                break;
+            }
+        }
+
+        if (fileEntryIdx >= 0) {
+            if (entries.size() > 1) {
+                throw new IllegalArgumentException(
+                        "Only one workload entry may use durationFile");
+            }
+            WorkloadEntry fileEntry = entries.get(fileEntryIdx);
+            try {
+                // Resolve the durationFile path relative to configDir if provided
+                String durationFilePath = fileEntry.durationFile();
+                Path resolvedPath = resolveDurationFilePath(durationFilePath);
+                this.fileSource = new DurationFileTaskSource(resolvedPath);
+            } catch (java.io.IOException ex) {
+                throw new RuntimeException(
+                        "Failed to load duration file '" + fileEntry.durationFile() + "': " + ex.getMessage(), ex);
+            }
+        } else {
+            this.fileSource = null;
+        }
     }
 
 
@@ -491,8 +605,30 @@ public final class TaskGenerator {
     }
 
     private Workload createWorkload(EntryState es, long taskSeed) {
+        // NEW: File mode detection - check if this entry uses duration file
+        if (fileSource != null && es.entry.usesDurationFile()) {
+            return switch (es.entry.kind()) {
+                case CPU    -> new FileCpuBoundWorkload(fileSource, taskSeed, 8);
+                case MEMORY -> new FileMemoryBoundWorkload(
+                        fileSource,
+                        es.memoryBuffer,
+                        es.memoryPattern,
+                        taskSeed,
+                        es.memoryWriteBack,
+                        8);
+                case IO     -> throw new IllegalArgumentException(
+                        "IO workloads do not support durationFile mode");
+            };
+        }
+
         return switch (es.entry.kind()) {
-            case CPU    -> new CpuBoundWorkload(taskSeed, es.cpuIterations);
+            case CPU    -> {
+                if ("DURATION_CONTROLLED".equals(es.cpuMode)) {
+                    yield new CpuBoundWorkloadDuration(es.cpuTargetMicros, taskSeed, 8);
+                } else {
+                    yield new CpuBoundWorkload(taskSeed, es.cpuIterations);
+                }
+            }
             case MEMORY -> {
                 if ("DURATION_CONTROLLED".equals(es.memoryMode)) {
                     yield new MemoryBoundWorkloadDuration(
@@ -522,6 +658,24 @@ public final class TaskGenerator {
         EntryState es = states[entryIndex];
         long taskSeed = seed + entryIndex;
         return createWorkload(es, taskSeed);
+    }
+
+    // NEW: Public helpers for file mode
+    public boolean isFileModeActive() {
+        return fileSource != null;
+    }
+
+    public int fileModeTaskCount() {
+        return fileSource == null ? 0 : fileSource.totalTasks();
+    }
+
+    /**
+     * Returns the effective task count for time-based or fixed-count runs.
+     * durationFile mode does not impose its own task limit; the caller
+     * should use the configured global taskCount (often 0 for time-based runs).
+     */
+    public int getEffectiveTaskCount(int globalTaskCount) {
+        return globalTaskCount;
     }
 
     private EntryState selectEntry(long taskId) {
@@ -563,6 +717,8 @@ public final class TaskGenerator {
                     s.entry.targetMillis(),
                     s.cpuIterations,
                     s.entry.usesFixedCpuIterations(),
+                    s.cpuTargetMicros,
+                    s.cpuMode,
                     s.memorySteps,
                     bufferMB,
                     s.memoryPattern,
@@ -573,4 +729,19 @@ public final class TaskGenerator {
         }
         return out;
     }
+
+    /**
+     * Resolve a durationFile path relative to configDir if provided and the path is relative.
+     * If configDir is null or the path is absolute, return the path as-is.
+     */
+    private Path resolveDurationFilePath(String durationFilePath) {
+        Path path = Paths.get(durationFilePath);
+        // If path is absolute or configDir is null, use the path as-is
+        if (path.isAbsolute() || configDir == null) {
+            return path;
+        }
+        // Otherwise, resolve relative to configDir
+        return configDir.resolve(path);
+    }
 }
+

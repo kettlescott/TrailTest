@@ -106,12 +106,12 @@ public class BenchmarkMain {
                 System.out.printf("--- Skipping run '%s' (enabled=false) ---%n%n", run.name());
                 continue;
             }
-            executeRun(root, run);
+            executeRun(root, run, configPath);
             System.out.println();
         }
     }
 
-    private static void executeRun(RootConfig root, RunConfig run) throws Exception {
+    private static void executeRun(RootConfig root, RunConfig run, Path configPath) throws Exception {
         GlobalConfig global = root.global();
         WorkloadConfig workload = root.workloads().get(run.workload());
         BenchmarkMode mode = BenchmarkMode.fromConfigValue(run.mode());
@@ -121,9 +121,12 @@ public class BenchmarkMain {
             throw new IllegalArgumentException("runs[].mode must be shared|sharded|hybrid|dynamic_hybrid for YAML runs: " + run.mode());
         }
 
+        // Extract the directory containing the config file for resolving relative durationFile paths
+        java.nio.file.Path configDir = configPath.getParent();
+
         TaskGenerator generator = new TaskGenerator(
                 workload, global.seed(), global.workloadSeedMode(), global.workloadSeed(),
-                global.shardImbalance(), global.workerCount(), global.shardedRouting());
+                global.shardImbalance(), global.workerCount(), global.shardedRouting(), configDir);
 
         // Configure the memory-bound workload's dead-store sink for this
         // run. SHARED_VOLATILE preserves legacy behaviour; THREAD_LOCAL
@@ -147,12 +150,16 @@ public class BenchmarkMain {
         final boolean diagSupported =
                 (mode == BenchmarkMode.SHARDED || mode == BenchmarkMode.SHARED) && diagCfg.anyEnabled();
         final int diagWorkerCount = (mode == BenchmarkMode.SHARED) ? 1 : global.workerCount();
-        final int diagQueueCount  = diagWorkerCount;
+        
+        // durationFile only supplies per-task durations; the run length
+        // is still governed by the configured taskCount / measurement window.
+        int effectiveTaskCount = generator.getEffectiveTaskCount(global.taskCount());
+        
         final DiagnosticsCollector diagnostics = diagSupported
                 ? new DiagnosticsCollector(
                         diagCfg,
-                        diagWorkerCount, diagQueueCount,
-                        global.taskCount() > 0 ? global.taskCount() : 0)
+                        diagWorkerCount, diagWorkerCount,
+                        global.taskCount() > 0 ? effectiveTaskCount : 0)
                 : null;
         WorkerStats[] workerStats = diagnostics == null ? null : diagnostics.workerStats();
 
@@ -378,7 +385,7 @@ public class BenchmarkMain {
                     global.measurementSeconds() * 1_000_000_000L,
                     true,
                     effectiveRetainCompletedTasks,
-                    global.taskCount(),
+                    effectiveTaskCount,
                     taskId,
                     () -> {
                         // Fired immediately after the last submit and
@@ -1225,6 +1232,7 @@ public class BenchmarkMain {
                     measurement,
                     releasePermit,
                     collector);
+
             dispatcher.submit(task);
             if (tasks != null) {
                 tasks.add(task);

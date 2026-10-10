@@ -242,11 +242,15 @@ class DynamicHybridRaceAndPolicyTest {
         d = new DynamicHybridDispatcher(c, 4);
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
         while (d.controllerIntervalSamples() < 3 && System.nanoTime() < deadline) {
-            Thread.yield();
+            Thread.sleep(1);  // Give controller thread opportunity to run
         }
-        assertTrue(d.controllerIntervalSamples() >= 3);
-        assertTrue(d.controllerIntervalMeanNanos() > 0);
-        assertTrue(d.controllerIntervalMaxNanos() >= d.controllerIntervalMeanNanos());
+        assertTrue(d.controllerIntervalSamples() >= 3, 
+            "Expected at least 3 samples, got " + d.controllerIntervalSamples());
+        assertTrue(d.controllerIntervalMeanNanos() > 0, 
+            "Mean interval should be > 0, got " + d.controllerIntervalMeanNanos());
+        assertTrue(d.controllerIntervalMaxNanos() >= d.controllerIntervalMeanNanos(),
+            "Max interval should be >= mean. Max=" + d.controllerIntervalMaxNanos() + 
+            ", Mean=" + d.controllerIntervalMeanNanos());
     }
 
     // ================================================================

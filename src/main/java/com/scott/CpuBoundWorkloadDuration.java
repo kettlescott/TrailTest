@@ -43,6 +43,7 @@ public final class CpuBoundWorkloadDuration implements Workload {
         long start = System.nanoTime();
         long elapsed = 0L;
         final int bs = batchSize;
+        long counter = 0L;
 
         while (elapsed < targetNanos) {
             // Perform one batch of iterations
@@ -50,7 +51,8 @@ public final class CpuBoundWorkloadDuration implements Workload {
                 x ^= (x << 13);
                 x ^= (x >>> 7);
                 x ^= (x << 17);
-                x = x * 0x9E3779B97F4A7C15L + i;
+                x = x * 0x9E3779B97F4A7C15L + counter;
+                counter++;
             }
             // Check deadline only after batch (amortizes nanoTime cost)
             elapsed = System.nanoTime() - start;
