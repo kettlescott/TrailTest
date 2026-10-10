@@ -1,0 +1,112 @@
+runName=shared_cpu_1400us_baseline_w16
+mode=shared
+workload=cpu_1400us
+workerBudget=16
+maxInFlight=16
+workloadEntries=1
+entry[0]=name=cpu_0ms, kind=CPU, targetMillis=0, ratio=1.0000
+calibrationEntries=1
+calibration[0]=name=cpu_0ms, kind=CPU, targetMicros=1400, mode=DURATION_CONTROLLED
+pinningEnabled=false
+pinningCoreMap=null
+shardedRouting.mode=MODULO
+shardedRouting.seed=0
+workloadSeedMode=SEQUENTIAL_TASK_ID
+workloadSeed=0
+blackholeMode=SHARED_VOLATILE
+retainCompletedTasks=true
+retainCompletedTasks.configured=true
+submitted=679852
+submitDurationSeconds=60.000
+taskDrainDurationSeconds=0.001
+shutdownDurationSeconds=0.000
+drainDurationSeconds=0.001
+totalDurationSeconds=60.001
+submittedPerSecond=11330.9
+completedPerSecond=11330.6
+backpressureEvents=385750
+backpressureWaitMillis=58947.186
+avgQueueDepth=0.04
+maxQueueDepth=6
+queueDepthSamples=6010
+
+=== Latency: overall ===
+Recorded tasks: 679852
+
+Metric                  p50        p90        p95        p99        max
+------------------------------------------------------------------------
+Submit overhead      0.000 ms     0.000 ms     0.000 ms     0.003 ms     0.373 ms
+Queue wait           0.006 ms     0.009 ms     0.010 ms     0.012 ms     2.957 ms
+Execution            1.400 ms     1.400 ms     1.400 ms     1.401 ms     1.953 ms
+End-to-end           1.406 ms     1.409 ms     1.410 ms     1.413 ms     4.736 ms
+
+=== Latency: CPU ===
+Recorded tasks: 679852
+
+Metric                  p50        p90        p95        p99        max
+------------------------------------------------------------------------
+Submit overhead      0.000 ms     0.000 ms     0.000 ms     0.003 ms     0.373 ms
+Queue wait           0.006 ms     0.009 ms     0.010 ms     0.012 ms     2.957 ms
+Execution            1.400 ms     1.400 ms     1.400 ms     1.401 ms     1.953 ms
+End-to-end           1.406 ms     1.409 ms     1.410 ms     1.413 ms     4.736 ms
+
+cpuIterations[cpu_0ms]=0  (calibrated)
+executionMs.avg=1.400
+executionMs.p50=1.400
+executionMs.p95=1.400
+executionMs.p99=1.401
+perKind.CPU.count=679852
+perKind.CPU.queueWaitMs.p50=0.006, p95=0.010, p99=0.012
+perKind.CPU.executionMs.avg=1.400
+perKind.CPU.executionMs.p50=1.400, p95=1.400, p99=1.401
+perKind.CPU.endToEndMs.p50=1.406, p95=1.410, p99=1.413
+
+=== Tail / Drain Diagnostic ===
+  measurementSubmitted               : 679,852
+  completedDuringSubmitWindow        : 679,837
+  completedDuringShutdownWindow      : 2
+  completedDuringTaskDrainWindow     : 13
+  tasksWithStartNanos==0  (skipped)  : 0
+  tasksWithFinishNanos==0 (skipped)  : 0
+  finishedAfterReportedDrainEnd      : 0
+  submitWindow                        : 0.000 ms .. 60000.059 ms
+  shutdownWindow  (session.stop)      : 60000.059 ms .. 60000.182 ms
+  taskDrainWindow (workload finish)   : 60000.182 ms .. 60001.424 ms
+  latestTaskFinishNanos (rel)         : 60001.404 ms
+
+  Top-10 tasks by end-to-end latency:
+    rank taskId      kind   meas phase     enq(ms)   start(ms)  finish(ms)   queueWait(ms)   exec(ms)   endToEnd(ms)
+       1 0           CPU    Y    submit      3.731       6.688       8.095          2.957      1.406          4.736
+       2 577754      CPU    Y    submit  50993.667   50993.674   50995.627          0.007      1.953          1.960
+       3 577757      CPU    Y    submit  50993.670   50993.683   50995.628          0.013      1.945          1.958
+       4 577756      CPU    Y    submit  50993.670   50993.681   50995.628          0.011      1.947          1.958
+       5 577755      CPU    Y    submit  50993.670   50993.678   50995.627          0.008      1.950          1.958
+       6 392013      CPU    Y    submit  34604.906   34604.909   34606.782          0.003      1.873          1.876
+       7 577758      CPU    Y    submit  50993.757   50993.764   50995.629          0.007      1.865          1.872
+       8 577759      CPU    Y    submit  50993.759   50993.766   50995.628          0.007      1.861          1.868
+       9 1           CPU    Y    submit      6.584       6.919       8.337          0.334      1.418          1.754
+      10 4           CPU    Y    submit      6.924       7.190       8.595          0.266      1.405          1.672
+
+
+=== Latency: overall averages ===
+queueWaitMs.avg=0.006
+queueWaitMs.p50=0.006
+queueWaitMs.p95=0.010
+queueWaitMs.p99=0.012
+endToEndMs.avg=1.406
+endToEndMs.p50=1.406
+endToEndMs.p95=1.410
+endToEndMs.p99=1.413
+
+=== Benchmark Completion ===
+completion.submittedTasks=679852
+completion.completedTasksAllPhases=679852
+completion.submitDurationSeconds=60.000059
+completion.shutdownDurationSeconds=0.000122
+completion.taskDrainDurationSeconds=0.001242
+completion.totalDurationSeconds=60.001424
+completion.wallClockWindowSeconds=60.881720
+completion.throughputFormula=submitted / totalDurationSeconds (= submitted / (submit + shutdown + drain))
+completion.submittedPerSecond=11330.9
+completion.completedPerSecond=11330.6
+completion.processCpuUtilization=0.2454  (cpuTimeNs=956320000000, wallNs=60881720350, cores=64)

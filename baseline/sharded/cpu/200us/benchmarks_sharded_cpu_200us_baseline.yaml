@@ -1,0 +1,89 @@
+global:
+  workerCount: 32
+  maxInflight: 32
+  seed: 3735928559
+  warmupSeconds: 0
+  measurementSeconds: 60
+  taskCount: 0
+  retainCompletedTasks: true
+  shardImbalance:
+    alpha: 0.0
+    hotShardId: 0
+    randomSeed: 3735928559
+
+workloads:
+  cpu_200us:
+    - kind: CPU
+      targetMicros: 200
+      ratio: 1.0
+
+profiling:
+  enabled: false
+  control: api
+  settings: profile
+  captureLocks: true
+  lockEventThreshold: 10us
+  start: beforeMeasurement
+  stop: afterMeasurement
+  filename: "${runName}.jfr"
+  startCommand: "JFR.start name=${runName} settings=${settings} filename=${outputFile}"
+  stopCommand: "JFR.stop name=${runName} filename=${outputFile}"
+  perf:
+    enabled: false
+    binary: perf
+    frequency: 99
+    clock: monotonic
+    callGraph: dwarf
+    mmapPages: 2048
+    extraArgs:
+      - "--no-buildid"
+      - "--no-buildid-cache"
+      - "-z"
+      - "-e"
+      - "cycles,instructions,cache-references,cache-misses,LLC-loads,LLC-load-misses"
+      - "-e"
+      - "context-switches,cpu-migrations"
+    filename: "${runName}.perf.data"
+    enablePerfStat: true
+    perfStatFilename: "${runName}.perf.stat.txt"
+    perfStatEvents:
+      - cycles
+      - instructions
+      - branches
+      - branch-misses
+      - cache-references
+      - cache-misses
+      - LLC-loads
+      - LLC-load-misses
+      - context-switches
+      - cpu-migrations
+      - page-faults
+      - task-clock
+  asyncProfiler:
+    enabled: false
+    binary: /home/wangs100/test/async-profiler-4.0-linux-x64/bin/asprof
+    event: wall
+    interval: 1ms
+    format: jfr
+    filename: "${runName}.async.jfr"
+    extraArgs: []
+
+diagnostics:
+  enabled: false
+  perWorkerLatency: false
+  queueDepthByShard: true
+  windowSampling: true
+  windowCorrelation: true
+  windowSeconds: 1
+  slowExecutionMicros: 200
+  shardLatencyCsv: true
+  shardWindowMillis: 100
+  rawTaskLogging: false
+
+runs:
+  - name: sharded_cpu_200us_baseline
+    mode: sharded
+    workload: cpu_200us
+    enabled: true
+    pinning:
+      enabled: false

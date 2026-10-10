@@ -1,0 +1,89 @@
+global:
+  workerCount: 16
+  maxInflight: 16
+  seed: 3735928559
+  warmupSeconds: 0
+  measurementSeconds: 60
+  taskCount: 0
+  retainCompletedTasks: true
+
+workloads:
+  mem_500000us:
+    - kind: MEMORY
+      targetMicros: 500000
+      ratio: 1.0
+      memory:
+        accessPattern: random
+        bufferMB: 512
+        writeBack: false
+
+profiling:
+  enabled: false
+  control: api
+  settings: profile
+  captureLocks: true
+  lockEventThreshold: 10us
+  start: beforeMeasurement
+  stop: afterMeasurement
+  filename: "${runName}.jfr"
+  startCommand: "JFR.start name=${runName} settings=${settings} filename=${outputFile}"
+  stopCommand: "JFR.stop name=${runName} filename=${outputFile}"
+  perf:
+    enabled: false
+    binary: perf
+    frequency: 99
+    clock: monotonic
+    callGraph: dwarf
+    mmapPages: 2048
+    extraArgs:
+      - "--no-buildid"
+      - "--no-buildid-cache"
+      - "-z"
+      - "-e"
+      - "cycles,instructions,cache-references,cache-misses,LLC-loads,LLC-load-misses"
+      - "-e"
+      - "context-switches,cpu-migrations"
+    filename: "${runName}.perf.data"
+    enablePerfStat: true
+    perfStatFilename: "${runName}.perf.stat.txt"
+    perfStatEvents:
+      - cycles
+      - instructions
+      - branches
+      - branch-misses
+      - cache-references
+      - cache-misses
+      - LLC-loads
+      - LLC-load-misses
+      - context-switches
+      - cpu-migrations
+      - page-faults
+      - task-clock
+  asyncProfiler:
+    enabled: false
+    binary: /home/wangs100/test/async-profiler-4.0-linux-x64/bin/asprof
+    event: wall
+    interval: 1ms
+    format: jfr
+    filename: "${runName}.async.jfr"
+    extraArgs: []
+
+diagnostics:
+  enabled: false
+  perWorkerLatency: false
+  queueDepthByShard: true
+  windowSampling: true
+  windowCorrelation: true
+  windowSeconds: 1
+  slowExecutionMicros: 200
+  shardLatencyCsv: true
+  shardWindowMillis: 100
+  rawTaskLogging: false
+
+runs:
+  - name: shared_mem_500000us_baseline_w16
+    mode: shared
+    workload: mem_500000us
+    enabled: true
+    pinning:
+      enabled: false

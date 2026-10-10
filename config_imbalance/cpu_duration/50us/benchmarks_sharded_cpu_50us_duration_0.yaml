@@ -1,0 +1,42 @@
+global:
+  workerCount: 32
+  maxInflight: 32
+  seed: 3735928559
+  warmupSeconds: 0
+  measurementSeconds: 60
+  taskCount: 2000000
+  retainCompletedTasks: true
+  shardImbalance:
+    alpha: 0.0
+    hotShardId: 0
+    randomSeed: 3735928559
+
+workloads:
+  cpu_50us_duration:
+    - kind: CPU
+      targetMicros: 50
+      ratio: 1.0
+
+profiling:
+  enabled: false
+
+diagnostics:
+  enabled: true
+  perWorkerLatency: false
+  queueDepthByShard: true
+  windowSampling: true
+  windowCorrelation: true
+  windowSeconds: 1
+  slowExecutionMicros: 50
+  shardLatencyCsv: true
+  shardWindowMillis: 100
+  rawTaskLogging: false
+
+runs:
+  - name: sharded_cpu_50us_duration_0
+    mode: sharded
+    workload: cpu_50us_duration
+    enabled: true
+    pinning:
+      enabled: false
+

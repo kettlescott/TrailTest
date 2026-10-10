@@ -1,0 +1,34 @@
+global:
+  workerCount: 4
+  maxInflight: 8
+  seed: 12345
+  warmupSeconds: 1
+  measurementSeconds: 2
+  taskCount: 0
+
+workloads:
+  cpu_file:
+    - kind: CPU
+      durationFile: test_durations.txt
+      ratio: 1.0
+  
+  memory_file:
+    - kind: MEMORY
+      durationFile: test_durations.txt
+      ratio: 1.0
+      memory:
+        bufferMB: 64
+        accessPattern: SEQUENTIAL
+        writeBack: true
+
+runs:
+  - name: cpu_file_test
+    mode: shared
+    workload: cpu_file
+    enabled: false
+
+  - name: memory_file_test
+    mode: shared
+    workload: memory_file
+    enabled: false
+

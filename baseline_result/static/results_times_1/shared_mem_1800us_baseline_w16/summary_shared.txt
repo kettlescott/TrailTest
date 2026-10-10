@@ -1,0 +1,111 @@
+runName=shared_mem_1800us_baseline_w16
+mode=shared
+workload=mem_1800us
+workerBudget=16
+maxInFlight=16
+workloadEntries=1
+entry[0]=name=memory_0ms, kind=MEMORY, targetMillis=0, ratio=1.0000, accessPattern=RANDOM, bufferMB=512, writeBack=false
+calibrationEntries=1
+calibration[0]=name=memory_0ms, kind=MEMORY, targetMillis=0, targetMicros=1800, mode=DURATION_CONTROLLED, bufferMB=512, accessPattern=RANDOM, writeBack=false
+pinningEnabled=false
+pinningCoreMap=null
+shardedRouting.mode=MODULO
+shardedRouting.seed=0
+workloadSeedMode=SEQUENTIAL_TASK_ID
+workloadSeed=0
+blackholeMode=SHARED_VOLATILE
+retainCompletedTasks=true
+retainCompletedTasks.configured=true
+submitted=529063
+submitDurationSeconds=60.000
+taskDrainDurationSeconds=0.002
+shutdownDurationSeconds=0.000
+drainDurationSeconds=0.002
+totalDurationSeconds=60.002
+submittedPerSecond=8817.7
+completedPerSecond=8817.4
+backpressureEvents=352558
+backpressureWaitMillis=58956.543
+avgQueueDepth=0.04
+maxQueueDepth=4
+queueDepthSamples=6010
+
+=== Latency: overall ===
+Recorded tasks: 529063
+
+Metric                  p50        p90        p95        p99        max
+------------------------------------------------------------------------
+Submit overhead      0.000 ms     0.000 ms     0.000 ms     0.003 ms     0.481 ms
+Queue wait           0.006 ms     0.009 ms     0.011 ms     0.014 ms     2.988 ms
+Execution            1.801 ms     1.802 ms     1.802 ms     1.803 ms     2.242 ms
+End-to-end           1.808 ms     1.811 ms     1.812 ms     1.817 ms     5.307 ms
+
+=== Latency: MEMORY ===
+Recorded tasks: 529063
+
+Metric                  p50        p90        p95        p99        max
+------------------------------------------------------------------------
+Submit overhead      0.000 ms     0.000 ms     0.000 ms     0.003 ms     0.481 ms
+Queue wait           0.006 ms     0.009 ms     0.011 ms     0.014 ms     2.988 ms
+Execution            1.801 ms     1.802 ms     1.802 ms     1.803 ms     2.242 ms
+End-to-end           1.808 ms     1.811 ms     1.812 ms     1.817 ms     5.307 ms
+
+executionMs.avg=1.801
+executionMs.p50=1.801
+executionMs.p95=1.802
+executionMs.p99=1.803
+perKind.MEMORY.count=529063
+perKind.MEMORY.queueWaitMs.p50=0.006, p95=0.011, p99=0.014
+perKind.MEMORY.executionMs.avg=1.801
+perKind.MEMORY.executionMs.p50=1.801, p95=1.802, p99=1.803
+perKind.MEMORY.endToEndMs.p50=1.808, p95=1.812, p99=1.817
+
+=== Tail / Drain Diagnostic ===
+  measurementSubmitted               : 529,063
+  completedDuringSubmitWindow        : 529,048
+  completedDuringShutdownWindow      : 0
+  completedDuringTaskDrainWindow     : 15
+  tasksWithStartNanos==0  (skipped)  : 0
+  tasksWithFinishNanos==0 (skipped)  : 0
+  finishedAfterReportedDrainEnd      : 0
+  submitWindow                        : 0.000 ms .. 60000.150 ms
+  shutdownWindow  (session.stop)      : 60000.150 ms .. 60000.276 ms
+  taskDrainWindow (workload finish)   : 60000.276 ms .. 60001.917 ms
+  latestTaskFinishNanos (rel)         : 60001.888 ms
+
+  Top-10 tasks by end-to-end latency:
+    rank taskId      kind   meas phase     enq(ms)   start(ms)  finish(ms)   queueWait(ms)   exec(ms)   endToEnd(ms)
+       1 0           MEMORY Y    submit      4.551       7.539       9.377          2.988      1.838          5.307
+       2 258163      MEMORY Y    submit  29290.625   29290.628   29292.870          0.004      2.242          2.246
+       3 75535       MEMORY Y    submit   8580.619    8580.623    8582.772          0.004      2.148          2.152
+       4 25          MEMORY Y    submit     10.829      11.146      12.956          0.317      1.810          2.127
+       5 29          MEMORY Y    submit     10.898      11.193      13.015          0.295      1.821          2.116
+       6 258164      MEMORY Y    submit  29290.754   29290.760   29292.870          0.006      2.110          2.116
+       7 31          MEMORY Y    submit     10.910      11.218      13.024          0.308      1.806          2.114
+       8 30          MEMORY Y    submit     10.905      11.207      13.016          0.302      1.809          2.111
+       9 26          MEMORY Y    submit     10.868      11.161      12.970          0.293      1.809          2.103
+      10 28          MEMORY Y    submit     10.895      11.180      12.988          0.285      1.809          2.094
+
+
+=== Latency: overall averages ===
+queueWaitMs.avg=0.006
+queueWaitMs.p50=0.006
+queueWaitMs.p95=0.011
+queueWaitMs.p99=0.014
+endToEndMs.avg=1.808
+endToEndMs.p50=1.808
+endToEndMs.p95=1.812
+endToEndMs.p99=1.817
+
+=== Benchmark Completion ===
+completion.submittedTasks=529063
+completion.completedTasksAllPhases=529063
+completion.submitDurationSeconds=60.000150
+completion.shutdownDurationSeconds=0.000125
+completion.taskDrainDurationSeconds=0.001642
+completion.totalDurationSeconds=60.001917
+completion.wallClockWindowSeconds=60.666837
+completion.throughputFormula=submitted / totalDurationSeconds (= submitted / (submit + shutdown + drain))
+completion.submittedPerSecond=8817.7
+completion.completedPerSecond=8817.4
+completion.processCpuUtilization=0.2465  (cpuTimeNs=957020000000, wallNs=60666836509, cores=64)

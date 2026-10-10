@@ -1,0 +1,234 @@
+runName=shared_cpu_50us_baseline
+mode=shared
+workload=cpu_50us
+workerBudget=32
+maxInFlight=32
+workloadEntries=1
+entry[0]=name=cpu_0ms, kind=CPU, targetMillis=0, ratio=1.0000, cpuIterations=16000
+calibrationEntries=1
+calibration[0]=name=cpu_0ms, kind=CPU, targetMillis=0, cpuIterations=16000  (fixed; calibration bypassed)
+pinningEnabled=false
+pinningCoreMap=null
+shardedRouting.mode=MODULO
+shardedRouting.seed=0
+workloadSeedMode=SEQUENTIAL_TASK_ID
+workloadSeed=0
+blackholeMode=SHARED_VOLATILE
+retainCompletedTasks=true
+retainCompletedTasks.configured=true
+submitted=2000000
+submitDurationSeconds=4.799
+taskDrainDurationSeconds=0.000
+shutdownDurationSeconds=0.000
+drainDurationSeconds=0.000
+totalDurationSeconds=4.800
+submittedPerSecond=416722.7
+completedPerSecond=416710.0
+backpressureEvents=496600
+backpressureWaitMillis=3229.630
+avgQueueDepth=6.49
+maxQueueDepth=31
+queueDepthSamples=490
+
+=== Latency: overall ===
+Recorded tasks: 2000000
+
+Metric                  p50        p90        p95        p99        max
+------------------------------------------------------------------------
+Submit overhead      0.000 ms     0.000 ms     0.000 ms     0.002 ms     0.427 ms
+Queue wait           0.012 ms     0.037 ms     0.050 ms     0.074 ms     3.402 ms
+Execution            0.049 ms     0.054 ms     0.054 ms     0.055 ms    46.451 ms
+End-to-end           0.062 ms     0.087 ms     0.100 ms     0.125 ms    46.467 ms
+
+=== Latency: CPU ===
+Recorded tasks: 2000000
+
+Metric                  p50        p90        p95        p99        max
+------------------------------------------------------------------------
+Submit overhead      0.000 ms     0.000 ms     0.000 ms     0.002 ms     0.427 ms
+Queue wait           0.012 ms     0.037 ms     0.050 ms     0.074 ms     3.402 ms
+Execution            0.049 ms     0.054 ms     0.054 ms     0.055 ms    46.451 ms
+End-to-end           0.062 ms     0.087 ms     0.100 ms     0.125 ms    46.467 ms
+
+cpuIterations[cpu_0ms]=16000  (fixed)
+executionMs.avg=0.053
+executionMs.p50=0.049
+executionMs.p95=0.054
+executionMs.p99=0.055
+perKind.CPU.count=2000000
+perKind.CPU.queueWaitMs.p50=0.012, p95=0.050, p99=0.074
+perKind.CPU.executionMs.avg=0.053
+perKind.CPU.executionMs.p50=0.049, p95=0.054, p99=0.055
+perKind.CPU.endToEndMs.p50=0.062, p95=0.100, p99=0.125
+
+=== Tail / Drain Diagnostic ===
+  measurementSubmitted               : 2,000,000
+  completedDuringSubmitWindow        : 2,000,000
+  completedDuringShutdownWindow      : 0
+  completedDuringTaskDrainWindow     : 0
+  tasksWithStartNanos==0  (skipped)  : 0
+  tasksWithFinishNanos==0 (skipped)  : 0
+  finishedAfterReportedDrainEnd      : 0
+  submitWindow                        : 0.000 ms .. 4799.355 ms
+  shutdownWindow  (session.stop)      : 4799.355 ms .. 4799.484 ms
+  taskDrainWindow (workload finish)   : 4799.484 ms .. 4799.501 ms
+  latestTaskFinishNanos (rel)         : 4799.363 ms
+
+  Top-10 tasks by end-to-end latency:
+    rank taskId      kind   meas phase     enq(ms)   start(ms)  finish(ms)   queueWait(ms)   exec(ms)   endToEnd(ms)
+       1 96          CPU    Y    submit    121.290     121.305     167.756          0.015     46.451         46.467
+       2 70          CPU    Y    submit    102.796     102.898     149.254          0.102     46.356         46.458
+       3 69          CPU    Y    submit    102.747     102.805     149.204          0.058     46.399         46.457
+       4 66          CPU    Y    submit     95.336      95.395     141.766          0.058     46.372         46.431
+       5 75          CPU    Y    submit    106.953     106.967     153.225          0.015     46.257         46.273
+       6 68          CPU    Y    submit     99.215      99.274     145.485          0.059     46.211         46.271
+       7 71          CPU    Y    submit    103.131     103.183     149.384          0.052     46.201         46.254
+       8 97          CPU    Y    submit    125.935     125.985     172.171          0.050     46.186         46.237
+       9 79          CPU    Y    submit    108.136     108.191     154.351          0.055     46.160         46.216
+      10 76          CPU    Y    submit    107.093     107.138     153.148          0.045     46.011         46.083
+
+
+=== Latency: overall averages ===
+queueWaitMs.avg=0.017
+queueWaitMs.p50=0.012
+queueWaitMs.p95=0.050
+queueWaitMs.p99=0.074
+endToEndMs.avg=0.069
+endToEndMs.p50=0.062
+endToEndMs.p95=0.100
+endToEndMs.p99=0.125
+
+=== Benchmark Completion ===
+completion.submittedTasks=2000000
+completion.completedTasksAllPhases=2000000
+completion.submitDurationSeconds=4.799355
+completion.shutdownDurationSeconds=0.000129
+completion.taskDrainDurationSeconds=0.000017
+completion.totalDurationSeconds=4.799501
+completion.wallClockWindowSeconds=6.937463
+completion.throughputFormula=submitted / totalDurationSeconds (= submitted / (submit + shutdown + drain))
+completion.submittedPerSecond=416722.7
+completion.completedPerSecond=416710.0
+completion.processCpuUtilization=0.2734  (cpuTimeNs=121380000000, wallNs=6937463275, cores=64)
+
+=== Diagnostics: worker busy / idle ===
+  (busyNs   = time inside task.run();  idleNs = time between finish and next start)
+  worker           busyMs         idleMs          tasks    busy%    idle%
+  0              3400.252       1356.185          63503   71.49%   28.51%
+  1              3388.427       1367.937          62763   71.24%   28.76%
+  2              3387.285       1368.777          62244   71.22%   28.78%
+  3              3385.616       1370.498          62391   71.18%   28.82%
+  4              3367.015       1388.895          62923   70.80%   29.20%
+  5              3376.151       1379.582          62483   70.99%   29.01%
+  6              3370.760       1384.929          62476   70.88%   29.12%
+  7              3374.894       1380.648          61924   70.97%   29.03%
+  8              3388.016       1367.456          62328   71.24%   28.76%
+  9              3387.890       1367.522          62434   71.24%   28.76%
+  10             3376.522       1378.736          62372   71.01%   28.99%
+  11             3364.817       1390.349          62898   70.76%   29.24%
+  12             3387.305       1367.765          63177   71.24%   28.76%
+  13             3360.009       1394.962          62523   70.66%   29.34%
+  14             3386.258       1368.572          63128   71.22%   28.78%
+  15             3385.244       1369.496          62439   71.20%   28.80%
+  16             3387.838       1366.796          63129   71.25%   28.75%
+  17             3365.766       1388.770          62656   70.79%   29.21%
+  18             3376.511       1377.929          62451   71.02%   28.98%
+  19             3363.751       1390.613          62886   70.75%   29.25%
+  20             3384.800       1369.427          62475   71.20%   28.80%
+  21             3389.682       1364.423          62594   71.30%   28.70%
+  22             3391.800       1362.196          62305   71.35%   28.65%
+  23             3389.898       1364.046          61747   71.31%   28.69%
+  24             3394.746       1359.100          61987   71.41%   28.59%
+  25             3390.850       1362.863          62809   71.33%   28.67%
+  26             3366.314       1387.276          62211   70.82%   29.18%
+  27             3368.283       1385.242          62300   70.86%   29.14%
+  28             3368.576       1384.824          62962   70.87%   29.13%
+  29             3382.476       1370.802          62301   71.16%   28.84%
+  30             3390.210       1363.046          61945   71.32%   28.68%
+  31             3388.801       1364.359          61236   71.30%   28.70%
+
+  aggregate.workers=32
+  aggregate.totalBusyMs=108186.761, totalIdleMs=43964.019, totalTasks=2000000
+  aggregate.busyRatio=0.7110  (sum(busy)/sum(busy+idle))
+  busyRatio.mean=0.7110, min=0.7066, max=0.7149, stddev=0.0022, cv=0.0031
+  idleRatio.mean=0.2890, min=0.2851, max=0.2934, stddev=0.0022, cv=0.0077
+  tasksPerWorker.mean=62500.00, min=61236, max=63503, stddev=452.65, cv=0.0072
+
+=== Diagnostics: config ===
+diagnostics.enabled=true
+diagnostics.perWorkerLatency=true
+diagnostics.queueDepthByShard=true
+diagnostics.windowSampling=true
+diagnostics.windowCorrelation=true
+diagnostics.windowSeconds=1.0
+diagnostics.slowExecutionMicros=200
+
+=== Diagnostics: per worker ===
+worker[0].processed=1873206
+worker[0].slowTasks=177
+worker[0].maxSlowBurst=148
+worker[0].executionMs.avg=0.053, p50=0.049, p95=0.054, p99=0.055, max=46.451
+worker[0].queueWaitMs.avg=0.017, p50=0.012, p95=0.050, p99=0.075, max=3.402
+
+=== Diagnostics: queue depth ===
+shard[0].avgQueueDepth=23.50, maxQueueDepth=26, p95QueueDepth=26, trueAvgDepth=6.317, emptyRatio=0.1411, nonEmptyRatio=0.8589  (windows=4, subTicks=489)
+avgQueueDepth.maxOverMean=1.000
+maxQueueDepth.maxOverMean=1.000
+aggregate.trueAvgDepth=6.317, emptyRatio=0.1411, nonEmptyRatio=0.8589, subTicks=489
+trueAvgDepth.maxOverMean=1.000
+emptyRatio.min=0.1411, max=0.1411
+nonEmptyRatio.min=0.8589, max=0.8589
+
+=== Diagnostics: imbalance ===
+processedCount.maxOverMin=1.000
+executionP99.maxOverMin=1.000
+queueWaitP99.maxOverMin=1.000
+
+=== Diagnostics: time windows ===
+window[0].completedPerWorker.min=277504, mean=277504.0, max=277504, maxOverMin=1.000, worstWorker=0
+window[0].maxQueueDepth=19
+window[0].queueDepthImbalance=1.000
+window[1].completedPerWorker.min=409600, mean=409600.0, max=409600, maxOverMin=1.000, worstWorker=0
+window[1].maxQueueDepth=26
+window[1].queueDepthImbalance=1.000
+window[2].completedPerWorker.min=410624, mean=410624.0, max=410624, maxOverMin=1.000, worstWorker=0
+window[2].maxQueueDepth=26
+window[2].queueDepthImbalance=1.000
+window[3].completedPerWorker.min=410624, mean=410624.0, max=410624, maxOverMin=1.000, worstWorker=0
+window[3].maxQueueDepth=23
+window[3].queueDepthImbalance=1.000
+
+=== Diagnostics: window correlation ===
+window[0].worstQueue=0
+window[0].worstQueue.maxQueueDepth=19
+window[0].worker.completedDelta=277504
+window[0].worker.execAvgMs=0.067
+window[0].worker.slowTasksDelta=177
+window[0].worker.maxSlowBurstDelta=148
+window[0].worker.queueWaitAvgMs=0.019
+window[1].worstQueue=0
+window[1].worstQueue.maxQueueDepth=26
+window[1].worker.completedDelta=409600
+window[1].worker.execAvgMs=0.050
+window[1].worker.slowTasksDelta=0
+window[1].worker.maxSlowBurstDelta=0
+window[1].worker.queueWaitAvgMs=0.016
+window[2].worstQueue=0
+window[2].worstQueue.maxQueueDepth=26
+window[2].worker.completedDelta=410624
+window[2].worker.execAvgMs=0.050
+window[2].worker.slowTasksDelta=0
+window[2].worker.maxSlowBurstDelta=0
+window[2].worker.queueWaitAvgMs=0.016
+window[3].worstQueue=0
+window[3].worstQueue.maxQueueDepth=23
+window[3].worker.completedDelta=410624
+window[3].worker.execAvgMs=0.050
+window[3].worker.slowTasksDelta=0
+window[3].worker.maxSlowBurstDelta=0
+window[3].worker.queueWaitAvgMs=0.016
+
+correlation.queueDepth_vs_execAvg=-0.902
+correlation.queueDepth_vs_slowTasksDelta=-0.905
+correlation.queueDepth_vs_completedDelta=0.903
+correlation.queueDepth_vs_queueWaitAvg=-0.892

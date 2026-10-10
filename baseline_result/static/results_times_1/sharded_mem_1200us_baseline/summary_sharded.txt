@@ -1,0 +1,146 @@
+runName=sharded_mem_1200us_baseline
+mode=sharded
+workload=mem_1200us
+workerBudget=32
+maxInFlight=32
+workloadEntries=1
+entry[0]=name=memory_0ms, kind=MEMORY, targetMillis=0, ratio=1.0000, accessPattern=RANDOM, bufferMB=512, writeBack=false
+calibrationEntries=1
+calibration[0]=name=memory_0ms, kind=MEMORY, targetMillis=0, targetMicros=1200, mode=DURATION_CONTROLLED, bufferMB=512, accessPattern=RANDOM, writeBack=false
+pinningEnabled=false
+pinningCoreMap=null
+shardedRouting.mode=MODULO
+shardedRouting.seed=0
+workloadSeedMode=SEQUENTIAL_TASK_ID
+workloadSeed=0
+blackholeMode=SHARED_VOLATILE
+retainCompletedTasks=true
+retainCompletedTasks.configured=true
+submitted=1574288
+submitDurationSeconds=60.000
+taskDrainDurationSeconds=0.001
+shutdownDurationSeconds=0.000
+drainDurationSeconds=0.001
+totalDurationSeconds=60.001
+submittedPerSecond=26238.1
+completedPerSecond=26237.6
+backpressureEvents=146542
+backpressureWaitMillis=55778.635
+avgQueueDepth=0.15
+maxQueueDepth=4
+queueDepthSamples=6010
+
+=== Latency: overall ===
+Recorded tasks: 1574288
+
+Metric                  p50        p90        p95        p99        max
+------------------------------------------------------------------------
+Submit overhead      0.000 ms     0.000 ms     0.000 ms     0.004 ms     1.006 ms
+Queue wait           0.006 ms     0.008 ms     0.008 ms     0.010 ms     3.739 ms
+Execution            1.201 ms     1.202 ms     1.202 ms     1.203 ms     4.878 ms
+End-to-end           1.207 ms     1.209 ms     1.210 ms     1.213 ms     4.941 ms
+
+=== Latency: MEMORY ===
+Recorded tasks: 1574288
+
+Metric                  p50        p90        p95        p99        max
+------------------------------------------------------------------------
+Submit overhead      0.000 ms     0.000 ms     0.000 ms     0.004 ms     1.006 ms
+Queue wait           0.006 ms     0.008 ms     0.008 ms     0.010 ms     3.739 ms
+Execution            1.201 ms     1.202 ms     1.202 ms     1.203 ms     4.878 ms
+End-to-end           1.207 ms     1.209 ms     1.210 ms     1.213 ms     4.941 ms
+
+executionMs.avg=1.201
+executionMs.p50=1.201
+executionMs.p95=1.202
+executionMs.p99=1.203
+perKind.MEMORY.count=1574288
+perKind.MEMORY.queueWaitMs.p50=0.006, p95=0.008, p99=0.010
+perKind.MEMORY.executionMs.avg=1.201
+perKind.MEMORY.executionMs.p50=1.201, p95=1.202, p99=1.203
+perKind.MEMORY.endToEndMs.p50=1.207, p95=1.210, p99=1.213
+
+=== Tail / Drain Diagnostic ===
+  measurementSubmitted               : 1,574,288
+  completedDuringSubmitWindow        : 1,574,270
+  completedDuringShutdownWindow      : 2
+  completedDuringTaskDrainWindow     : 16
+  tasksWithStartNanos==0  (skipped)  : 0
+  tasksWithFinishNanos==0 (skipped)  : 0
+  finishedAfterReportedDrainEnd      : 0
+  submitWindow                        : 0.000 ms .. 60000.075 ms
+  shutdownWindow  (session.stop)      : 60000.075 ms .. 60000.300 ms
+  taskDrainWindow (workload finish)   : 60000.300 ms .. 60001.282 ms
+  latestTaskFinishNanos (rel)         : 60001.207 ms
+
+  Top-10 tasks by end-to-end latency:
+    rank taskId      kind   meas phase     enq(ms)   start(ms)  finish(ms)   queueWait(ms)   exec(ms)   endToEnd(ms)
+       1 1436076     MEMORY Y    submit  54734.005   54737.744   54738.946          3.739      1.202          4.941
+       2 1436108     MEMORY Y    submit  54735.222   54738.959   54740.160          3.738      1.201          4.938
+       3 1436140     MEMORY Y    submit  54736.442   54740.167   54741.368          3.725      1.201          4.925
+       4 1436172     MEMORY Y    submit  54737.670   54741.377   54742.578          3.707      1.201          4.907
+       5 1436044     MEMORY Y    submit  54732.791   54732.797   54737.675          0.006      4.878          4.884
+       6 1436204     MEMORY Y    submit  54738.927   54742.583   54743.785          3.656      1.203          4.858
+       7 1436236     MEMORY Y    submit  54740.145   54743.795   54744.997          3.650      1.202          4.852
+       8 1436268     MEMORY Y    submit  54741.371   54745.006   54746.208          3.635      1.202          4.837
+       9 1436300     MEMORY Y    submit  54742.595   54746.214   54747.415          3.619      1.201          4.820
+      10 1436332     MEMORY Y    submit  54743.821   54747.424   54748.625          3.603      1.201          4.803
+
+  Per-shard pending queue size (at submitEnd / after drain) + measurement-completed count per worker:
+    shard[ 0]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[ 1]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[ 2]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[ 3]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[ 4]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[ 5]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[ 6]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[ 7]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[ 8]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[ 9]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[10]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[11]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[12]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[13]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[14]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[15]  submitEnd=    0  postDrain=    0   measCompleted=  49,197  allPhases=  49,197
+    shard[16]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[17]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[18]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[19]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[20]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[21]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[22]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[23]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[24]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[25]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[26]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[27]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[28]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[29]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[30]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    shard[31]  submitEnd=    0  postDrain=    0   measCompleted=  49,196  allPhases=  49,196
+    TOTAL      submitEnd=    0  postDrain=    0
+
+
+=== Latency: overall averages ===
+queueWaitMs.avg=0.006
+queueWaitMs.p50=0.006
+queueWaitMs.p95=0.008
+queueWaitMs.p99=0.010
+endToEndMs.avg=1.208
+endToEndMs.p50=1.207
+endToEndMs.p95=1.210
+endToEndMs.p99=1.213
+
+=== Benchmark Completion ===
+completion.submittedTasks=1574288
+completion.completedTasksAllPhases=1574288
+completion.submitDurationSeconds=60.000075
+completion.shutdownDurationSeconds=0.000224
+completion.taskDrainDurationSeconds=0.000982
+completion.totalDurationSeconds=60.001282
+completion.wallClockWindowSeconds=61.778554
+completion.throughputFormula=submitted / totalDurationSeconds (= submitted / (submit + shutdown + drain))
+completion.submittedPerSecond=26238.1
+completion.completedPerSecond=26237.6
+completion.processCpuUtilization=0.4807  (cpuTimeNs=1900520000000, wallNs=61778554177, cores=64)
