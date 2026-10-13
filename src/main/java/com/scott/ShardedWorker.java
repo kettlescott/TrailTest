@@ -112,7 +112,7 @@ final class ShardedWorker implements Runnable {
     ShardedWorker(int workerId,
                   LinkedBlockingQueue<Task> localQueue,
                   AtomicBoolean shutdown) {
-        this(workerId, localQueue, shutdown, false, -1, null);
+        this(workerId, localQueue, shutdown, false, -1, null, null);
     }
 
     /**
@@ -131,7 +131,8 @@ final class ShardedWorker implements Runnable {
                   AtomicBoolean shutdown,
                   boolean enablePinning,
                   int coreId) {
-        this(workerId, localQueue, shutdown, enablePinning, coreId, null);
+        this(workerId, localQueue, shutdown, enablePinning, coreId, null, null,
+                null, -1, false, null, null);
     }
 
     /** Full constructor; {@code stats} may be null when diagnostics disabled. */
@@ -141,7 +142,8 @@ final class ShardedWorker implements Runnable {
                   boolean enablePinning,
                   int coreId,
                   WorkerStats stats) {
-        this(workerId, localQueue, shutdown, enablePinning, coreId, stats, null);
+        this(workerId, localQueue, shutdown, enablePinning, coreId, stats, null,
+                null, -1, false, null, null);
     }
 
     /** Full constructor with optional per-worker busy/idle tracker. */
@@ -153,8 +155,7 @@ final class ShardedWorker implements Runnable {
                   WorkerStats stats,
                   WorkerBusyIdleTracker busyIdle) {
         this(workerId, localQueue, shutdown, enablePinning, coreId, stats, busyIdle,
-             /*cpuMask*/ null, /*numaNodeId*/ -1,
-             /*selfAllocateQueue*/ false, /*publishedQueue*/ null, /*queueReadyLatch*/ null);
+                null, -1, false, null, null);
     }
 
     /**
@@ -242,6 +243,7 @@ final class ShardedWorker implements Runnable {
                 } else {
                     task.run();
                 }
+
 
                 processedCount++;
                 if (task.isMeasurement()) {

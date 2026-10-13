@@ -15,7 +15,9 @@ public record GlobalConfig(
         /** Experiment 1: independent shared queues (default 1 = legacy). */
         int sharedQueueCount,
         /** Experiment 2: shard-imbalance config (null = disabled/legacy). */
-        ShardImbalanceConfig shardImbalance
+        ShardImbalanceConfig shardImbalance,
+        /** Phased experiment mode: enables hybridworkloads section (default false). */
+        boolean hybrid
 ) {
     /** Back-compat ctor — applies legacy defaults for all new knobs. */
     public GlobalConfig(int workerCount,
@@ -31,7 +33,8 @@ public record GlobalConfig(
                 BlackholeMode.SHARED_VOLATILE,
                 false,
                 1,
-                null);
+                null,
+                false);
     }
 
     /** Intermediate back-compat ctor (pre-experiment call sites). */
@@ -48,7 +51,7 @@ public record GlobalConfig(
                         boolean retainCompletedTasks) {
         this(workerCount, maxInflight, seed, warmupSeconds, measurementSeconds, taskCount,
                 shardedRouting, workloadSeedMode, workloadSeed, blackholeMode, retainCompletedTasks,
-                1, null);
+                1, null, false);
     }
 
     public void validate() {

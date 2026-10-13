@@ -39,10 +39,12 @@ public final class BenchmarkConfigLoader {
                     (Map<String, Object>) root.get("dynamicHybrid"), "dynamicHybrid");
             DiagnosticsConfig diagnostics = parseDiagnostics((Map<String, Object>) root.get("diagnostics"));
             AttributionConfig attribution = parseAttribution((Map<String, Object>) root.get("attribution"));
+            Map<String, PhasedWorkloadEntry> hybridworkloads = parseHybridworkloads(
+                    (Map<String, Object>) root.get("hybridworkloads"));
             List<RunConfig> runs = parseRuns((List<Object>) root.get("runs"));
 
             RootConfig config = new RootConfig(global, workloads, profiling, hybrid, dynamicHybrid,
-                    diagnostics, attribution, runs);
+                    diagnostics, attribution, hybridworkloads, runs);
             config.validate();
             return config;
         }
@@ -97,6 +99,9 @@ public final class BenchmarkConfigLoader {
             shardImbalance = new ShardImbalanceConfig(alpha, hot, rseed);
         }
 
+        // --- Phased experiment mode (default false) ---
+        boolean hybrid = boolVal(map, "hybrid", false);
+
         return new GlobalConfig(
                 workerCount,
                 maxInflight,
@@ -110,7 +115,8 @@ public final class BenchmarkConfigLoader {
                 blackholeMode,
                 retainCompletedTasks,
                 sharedQueueCount,
-                shardImbalance
+                shardImbalance,
+                hybrid
         );
     }
 
@@ -704,5 +710,90 @@ public final class BenchmarkConfigLoader {
         Object value = map.get(key);
         return value == null ? defaultVal : String.valueOf(value);
     }
-}
 
+    @SuppressWarnings("unchecked")
+    private static Map<String, PhasedWorkloadEntry> parseHybridworkloads(Map<String, Object> map) {
+        if (map == null || map.isEmpty()) {
+            return new LinkedHashMap<>();  // Empty if not present
+        }
+
+        Map<String, PhasedWorkloadEntry> result = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            String name = entry.getKey();
+            Object value = entry.getValue();
+            String path = "hybridworkloads." + name;
+
+            if (!(value instanceof Map<?, ?>)) {
+                throw new IllegalArgumentException(path + " must be a map");
+            }
+
+            Map<String, Object> entryMap = (Map<String, Object>) value;
+            
+            // Parse basic fields
+            String kindStr = strVal(entryMap, "kind", null);
+            WorkloadKind kind = kindStr != null ? WorkloadKind.valueOf(kindStr.toUpperCase())
+                    : null;
+            if (kind == null) {
+                throw new IllegalArgumentException(path + ".kind is required");
+            }
+
+            String executorStr = strVal(entryMap, "executor", "SHARDED");
+            ExecutorMode executor = ExecutorMode.parse(executorStr);
+
+            long targetMicros = longVal(entryMap, "targetMicros", 0L);
+
+            // Parse optional hybrid config
+            AdaptiveHybridConfig adaptiveHybrid = null;
+            Object hybridRaw = entryMap.get("hybrid");
+            if (hybridRaw instanceof Map<?, ?> hm) {
+                Map<String, Object> hMap = (Map<String, Object>) hm;
+                String initialModeStr = strVal(hMap, "initialMode", "SHARDED");
+                ExecutorMode initialMode = ExecutorMode.parse(initialModeStr);
+                double sharedEnterCv = doubleVal(hMap, "sharedEnterCv", 0.16);
+                double shardedEnterCv = doubleVal(hMap, "shardedEnterCv", 0.08);
+                long windowMillis = longVal(hMap, "windowMillis", 100L);
+                long debugCvPrintIntervalSeconds = longVal(hMap, "debugCvPrint", 0L);
+                boolean only = boolVal(hMap, "only", false);
+                // Pass targetMicros to config (for targetDeviation calculation)
+                adaptiveHybrid = new AdaptiveHybridConfig(initialMode, sharedEnterCv, shardedEnterCv, 
+                    windowMillis, debugCvPrintIntervalSeconds, targetMicros);
+            }
+
+            // Parse phases
+            List<PhasedConfig> phases = new ArrayList<>();
+            Object phasesRaw = entryMap.get("phases");
+            if (phasesRaw instanceof List<?> phasesList) {
+                for (int i = 0; i < phasesList.size(); i++) {
+                    Object pObj = phasesList.get(i);
+                    if (!(pObj instanceof Map<?, ?>)) {
+                        throw new IllegalArgumentException(
+                                path + ".phases[" + i + "] must be a map");
+                    }
+                    Map<String, Object> pMap = (Map<String, Object>) pObj;
+                    int durationSeconds = intVal(pMap, "durationSeconds", 0);
+                    String durationFile = strVal(pMap, "durationFile", null);
+                    phases.add(new PhasedConfig(durationSeconds, durationFile));
+                }
+            }
+            if (phases.isEmpty()) {
+                throw new IllegalArgumentException(path + ".phases is required and must not be empty");
+            }
+
+            // Parse optional memory config
+            MemoryWorkloadConfig memory = null;
+            Object memRaw = entryMap.get("memory");
+            if (memRaw instanceof Map<?, ?> mm) {
+                memory = MemoryWorkloadConfig.fromMap((Map<String, Object>) mm);
+            }
+
+            int cpuIterations = intVal(entryMap, "cpuIterations", 0);
+            int memorySteps = intVal(entryMap, "memorySteps", 0);
+
+            PhasedWorkloadEntry pwe = new PhasedWorkloadEntry(
+                    name, kind, executor, targetMicros, adaptiveHybrid, phases, memory,
+                    cpuIterations, memorySteps);
+            result.put(name, pwe);
+        }
+        return result;
+    }
+}

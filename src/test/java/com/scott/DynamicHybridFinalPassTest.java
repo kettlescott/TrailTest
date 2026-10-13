@@ -334,18 +334,21 @@ class DynamicHybridFinalPassTest {
     void failedScaleOutRollsBackReservationAndTimestamp() {
         d = new DynamicHybridDispatcher(cfg(0, 1, 10_000_000L), 4);
         assertEquals(3, d.maxShardedWorkers());
-        // Force every shard to non-INACTIVE so no scale-out candidate
-        // exists. requestScaleOut should return -1 AND leave the
-        // reservation counter at 0.
-        for (int i = 0; i < 4; i++) d.forceState(i, ShardState.DRAINING);
+        // Pre-stamp every INACTIVE shard so requestScaleOut can reserve
+        // capacity but cannot successfully publish an ACTIVATING state.
+        // This exercises the rollback path deterministically without
+        // racing the worker threads' own state transitions.
+        for (int i = 0; i < 4; i++) {
+            d.activationRequestNanosSetForTests(i, 1_234_567_890L + i);
+        }
         int reservedBefore = d.reservedShardedCapacity();
         assertEquals(-1, d.requestScaleOut());
         assertEquals(reservedBefore, d.reservedShardedCapacity(),
                 "a scale-out that finds no candidate must not leak reservation");
-        // No shard's timestamp should be set — all should still be -1.
+        // No shard's timestamp should be modified by the failed attempt.
         for (int i = 0; i < 4; i++) {
-            assertEquals(-1L, d.activationRequestNanosForTests(i),
-                    "shard " + i + " timestamp must be -1 after a failed scale-out");
+            assertEquals(1_234_567_890L + i, d.activationRequestNanosForTests(i),
+                    "shard " + i + " timestamp must remain unchanged after a failed scale-out");
         }
     }
 

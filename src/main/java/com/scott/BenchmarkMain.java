@@ -92,6 +92,7 @@ public class BenchmarkMain {
 
     public static void main(String[] args) throws Exception {
         Path configPath = parseConfigPath(args);
+//        Path configPath = Paths.get("/Users/wangs100/dev/multiqueue/TrailTest/hybrid/cpu/50us/benchmarks_hybrid_cpu_100us.yaml");
         RootConfig root = BenchmarkConfigLoader.load(configPath);
         root = applyCliOverrides(root, args);
         root.validate();
@@ -113,8 +114,64 @@ public class BenchmarkMain {
 
     private static void executeRun(RootConfig root, RunConfig run, Path configPath) throws Exception {
         GlobalConfig global = root.global();
-        WorkloadConfig workload = root.workloads().get(run.workload());
         BenchmarkMode mode = BenchmarkMode.fromConfigValue(run.mode());
+
+        if (global.hybrid()) {
+            Map<String, PhasedWorkloadEntry> phasedMap = root.hybridworkloads();
+            if (phasedMap == null || phasedMap.isEmpty()) {
+                throw new IllegalArgumentException("global.hybrid=true requires hybridworkloads section");
+            }
+            PhasedWorkloadEntry phased = phasedMap.get(run.workload());
+            if (phased == null) {
+                if (phasedMap.size() == 1) {
+                    phased = phasedMap.values().iterator().next();
+                } else {
+                    throw new IllegalArgumentException(
+                            "global.hybrid=true requires run.workload to match a hybridworkloads key; got '"
+                                    + run.workload() + "'");
+                }
+            }
+
+            System.out.printf("[Hybrid] startup: workload=%s, executor=%s, phases=%d%n",
+                    phased.displayName(), phased.executor(), phased.phases().size());
+            if (phased.hybrid() != null) {
+                System.out.printf("[Hybrid] startup config: initialMode=%s, sharedEnterCv=%.3f, shardedEnterCv=%.3f, windowMillis=%d, debugCvPrint=%ds%n",
+                        phased.hybrid().initialMode(), phased.hybrid().sharedEnterCv(),
+                        phased.hybrid().shardedEnterCv(), phased.hybrid().windowMillis(), phased.hybrid().debugCvPrintIntervalSeconds());
+            }
+
+            Path configDir = configPath.getParent();
+            BenchmarkExecutor executor = switch (phased.executor()) {
+                case SHARED -> new SharedExecutor(global.workerCount());
+                case SHARDED -> new ShardedExecutor(global.workerCount());
+                case HYBRID -> new AdaptiveHybridExecutor(global.workerCount(), phased.hybrid());
+            };
+
+            PhasedBenchmarkRunner phasedRunner = new PhasedBenchmarkRunner(
+                    phased, executor, configDir, global.maxInflight());
+            phasedRunner.preloadDurationFiles();
+            List<PhasedBenchmarkRunner.PhaseStatistics> phaseStats = phasedRunner.run();
+//            phasedRunner.run();
+            executor.shutdown();
+            executor.awaitTermination(global.measurementSeconds() + global.warmupSeconds() + 60L, TimeUnit.SECONDS);
+
+            Path runDir = Paths.get("results", run.name());
+            Files.createDirectories(runDir);
+            phasedRunner.writeSummaryFiles(runDir, run.name(), phased.executor().name());
+            StringBuilder summary = new StringBuilder();
+            summary.append("run=").append(run.name()).append('\n');
+            summary.append("executor=").append(phased.executor()).append('\n');
+            for (PhasedBenchmarkRunner.PhaseStatistics ps : phaseStats) {
+                summary.append(ps.toString()).append('\n');
+            }
+            Path summaryPath = runDir.resolve("summary_hybrid.txt");
+            Files.writeString(summaryPath, summary.toString());
+            System.out.printf("  Summary file: %s%n", summaryPath);
+
+            return;
+        }
+
+        WorkloadConfig workload = root.workloads().get(run.workload());
 
         if (mode != BenchmarkMode.SHARED && mode != BenchmarkMode.SHARDED
                 && mode != BenchmarkMode.HYBRID && mode != BenchmarkMode.DYNAMIC_HYBRID) {
@@ -1488,7 +1545,7 @@ public class BenchmarkMain {
             String val = null;
             String key;
             int eq = a.indexOf('=');
-            if (eq >= 0) { key = a.substring(0, eq); val = a.substring(eq + 1); }
+            if (eq >=  0) { key = a.substring(0, eq); val = a.substring(eq + 1); }
             else         { key = a; if (i + 1 < args.length && !args[i + 1].startsWith("--")) val = args[++i]; }
             switch (key) {
                 case "--shared-queue-count"    -> sharedQueueCount = Integer.parseInt(val);
@@ -1515,12 +1572,12 @@ public class BenchmarkMain {
                 g.warmupSeconds(), g.measurementSeconds(), g.taskCount(),
                 g.shardedRouting(), g.workloadSeedMode(), g.workloadSeed(),
                 g.blackholeMode(), g.retainCompletedTasks(),
-                sqc, si);
+                sqc, si, g.hybrid());
         System.out.printf("[cli-override] sharedQueueCount=%d, shardImbalance=%s%n",
                 sqc, si == null ? "disabled" : si.describe());
         return new RootConfig(g2, root.workloads(), root.profiling(),
                 root.hybrid(), root.dynamicHybrid(),
-                root.diagnostics(), root.attribution(), root.runs());
+                root.diagnostics(), root.attribution(), root.hybridworkloads(), root.runs());
     }
     /**
      * Reads a {@code <runName>.perf.stat.txt} file (produced by

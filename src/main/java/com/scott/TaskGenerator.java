@@ -217,6 +217,7 @@ public final class TaskGenerator {
     private final WorkloadSeedMode seedMode;
     private final long workloadSeed;
     private final Path configDir;  // Directory containing the config file, used to resolve relative durationFile paths
+    private boolean useHybridWorkloads = false;  // Flag to enable HybridCPUWorkload for CV monitoring
 
     // NEW: File-mode task generation
     private final DurationFileTaskSource fileSource;  // null for non-file mode
@@ -624,7 +625,12 @@ public final class TaskGenerator {
         return switch (es.entry.kind()) {
             case CPU    -> {
                 if ("DURATION_CONTROLLED".equals(es.cpuMode)) {
-                    yield new CpuBoundWorkloadDuration(es.cpuTargetMicros, taskSeed, 8);
+                    // Use HybridCPUWorkload for precise timing in Hybrid executor
+                    if (useHybridWorkloads) {
+                        yield new HybridCPUWorkload(es.cpuTargetMicros, taskSeed);
+                    } else {
+                        yield new CpuBoundWorkloadDuration(es.cpuTargetMicros, taskSeed, 8);
+                    }
                 } else {
                     yield new CpuBoundWorkload(taskSeed, es.cpuIterations);
                 }
@@ -743,5 +749,13 @@ public final class TaskGenerator {
         // Otherwise, resolve relative to configDir
         return configDir.resolve(path);
     }
-}
 
+    /**
+     * Enable HybridCPUWorkload for precise timing in Hybrid executor.
+     * When true, duration-controlled CPU workloads use HybridCPUWorkload
+     * instead of CpuBoundWorkloadDuration.
+     */
+    public void setUseHybridWorkloads(boolean enable) {
+        this.useHybridWorkloads = enable;
+    }
+}

@@ -1,0 +1,303 @@
+package com.scott;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.Semaphore;
+
+/**
+ * Runner for phased benchmark workloads.
+ *
+ * <p>Orchestrates multi-phase execution with:
+ * <ul>
+ *   <li>File preloading (one-time, at startup)</li>
+ *   <li>Cyclic task submission by phase</li>
+ *   <li>Per-phase measurement and statistics</li>
+ * </ul>
+ */
+public final class PhasedBenchmarkRunner {
+
+    private final PhasedWorkloadEntry entry;
+    private final BenchmarkExecutor executor;
+    private final Path baseDir;
+    private final int maxInflight;
+
+    private Map<String, long[]> fileCache;  // durationFile -> array of micros
+    private List<Integer> fileIndices;       // current index per phase
+    private PhasedLatencyCollector latencyCollector;
+
+    public PhasedBenchmarkRunner(PhasedWorkloadEntry entry,
+                                 BenchmarkExecutor executor,
+                                 Path baseDir) {
+        this(entry, executor, baseDir, Integer.MAX_VALUE);
+    }
+
+    public PhasedBenchmarkRunner(PhasedWorkloadEntry entry,
+                                 BenchmarkExecutor executor,
+                                 Path baseDir,
+                                 int maxInflight) {
+        this.entry = entry;
+        this.executor = executor;
+        this.baseDir = baseDir;
+        this.maxInflight = maxInflight > 0 ? maxInflight : Integer.MAX_VALUE;
+    }
+
+    /**
+     * Preloads all unique duration files into memory.
+     * Called once at startup.
+     */
+    public void preloadDurationFiles() throws Exception {
+        fileCache = new java.util.LinkedHashMap<>();
+        for (PhasedConfig phase : entry.phases()) {
+            String file = phase.durationFile();
+            if (!fileCache.containsKey(file)) {
+                Path resolved = baseDir == null ? Path.of(file) : baseDir.resolve(file).normalize();
+                DurationFileTaskSource source = new DurationFileTaskSource(resolved);
+                long[] durations = new long[source.totalTasks()];
+                for (int i = 0; i < durations.length; i++) {
+                    durations[i] = source.nextDurationMicros();
+                }
+                fileCache.put(file, durations);
+            }
+        }
+    }
+
+    /**
+     * Returns the file cache (for testing purposes).
+     */
+    public Map<String, long[]> getFileCache() {
+        return fileCache;
+    }
+
+    /**
+     * Runs the complete multi-phase benchmark.
+     * Returns per-phase statistics.
+     */
+    public List<PhaseStatistics> run() throws Exception {
+        if (fileCache == null) {
+            throw new IllegalStateException("Must call preloadDurationFiles() first");
+        }
+
+        if (executor instanceof AdaptiveHybridExecutor ahe) {
+            ahe.markMeasurementStart();
+        }
+
+        long measurementStartNanos = System.nanoTime();
+        List<PhaseStatistics> phaseStats = new ArrayList<>();
+        latencyCollector = new PhasedLatencyCollector(entry.phases().size());
+        fileIndices = new ArrayList<>();
+        for (int i = 0; i < entry.phases().size(); i++) {
+            fileIndices.add(0);
+        }
+
+        for (int phaseId = 0; phaseId < entry.phases().size(); phaseId++) {
+            PhasedConfig phase = entry.phases().get(phaseId);
+            long phaseDurationNanos = phase.durationSeconds() * 1_000_000_000L;
+            long phaseStartNanos = System.nanoTime();
+
+            PhaseStatistics stats = runPhase(phaseId, phase, phaseDurationNanos, measurementStartNanos);
+            phaseStats.add(stats);
+
+            long phaseElapsedNanos = System.nanoTime() - phaseStartNanos;
+            System.out.printf("[Phase %d] Completed in %.3f seconds, %d tasks submitted%n",
+                    phaseId, phaseElapsedNanos / 1_000_000_000.0, stats.tasksSubmitted);
+        }
+
+        return phaseStats;
+    }
+
+    public void writeSummaryFiles(Path runDir, String runName, String executorName) throws IOException {
+        if (latencyCollector == null) {
+            throw new IllegalStateException("Must call run() before writeSummaryFiles()");
+        }
+
+        Files.createDirectories(runDir);
+        Files.writeString(runDir.resolve("summary_overall.txt"), buildOverallSummary(runName, executorName));
+        for (int phaseId = 0; phaseId < entry.phases().size(); phaseId++) {
+            Files.writeString(runDir.resolve("summary_phase_" + (phaseId + 1) + ".txt"),
+                    buildPhaseSummary(runName, executorName, phaseId));
+        }
+    }
+
+    /**
+     * Runs a single phase.
+     */
+    private PhaseStatistics runPhase(int phaseId, PhasedConfig phase,
+                                     long phaseDurationNanos, long measurementStartNanos) throws Exception {
+        long phaseStartNanos = System.nanoTime();
+        long phaseDeadline = phaseStartNanos + phaseDurationNanos;
+        Semaphore permits = new Semaphore(maxInflight);
+        Runnable releasePermit = permits::release;
+
+        long taskId = 0;
+        int submitted = 0;
+        int fileIndex = fileIndices.get(phaseId);
+        long[] durations = fileCache.get(phase.durationFile());
+
+        while (System.nanoTime() < phaseDeadline) {
+            if (!permits.tryAcquire()) {
+                permits.acquire();
+            }
+
+            long durationMicros = durations[fileIndex];
+            fileIndex = (fileIndex + 1) % durations.length;
+
+            Workload workload = createWorkload(durationMicros);
+            Task task = new Task(
+                    taskId++,
+                    entry.kind(),
+                    durationMicros / 1000,
+                    System.nanoTime(),
+                    true,
+                    workload,
+                    releasePermit,
+                    latencyCollector);
+            task.setPhaseId(phaseId);
+
+            executor.submit(task);
+            submitted++;
+        }
+
+        permits.acquire(maxInflight);
+        permits.release(maxInflight);
+
+        fileIndices.set(phaseId, fileIndex);
+
+        long phaseElapsedNanos = System.nanoTime() - phaseStartNanos;
+        return new PhaseStatistics(
+                phaseId,
+                submitted,
+                phaseElapsedNanos,
+                (System.nanoTime() - measurementStartNanos) / 1_000_000_000.0);
+    }
+
+    /**
+     * Creates a workload for the given duration.
+     * Supports CPU and MEMORY workloads with duration control.
+     */
+    private Workload createWorkload(long durationMicros) {
+        long seed = System.nanoTime() ^ durationMicros;
+        
+        switch (entry.kind()) {
+            case CPU:
+                if (executor instanceof AdaptiveHybridExecutor) {
+                    return new HybridCPUWorkload(durationMicros, seed);
+                }
+                return new CpuBoundWorkloadDuration(durationMicros, seed, 1000);
+            
+            case MEMORY:
+                MemoryWorkloadConfig memConfig = entry.memoryOrDefaults();
+                long[] buffer = allocateBuffer(memConfig.bufferMB(), seed);
+                return new MemoryBoundWorkloadDuration(
+                    buffer, durationMicros, memConfig.accessPattern(), 
+                    seed, memConfig.writeBack(), 8);
+            
+            default:
+                throw new IllegalArgumentException("Unsupported workload kind: " + entry.kind());
+        }
+    }
+    
+    /**
+     * Allocates a memory buffer for MEMORY workload.
+     */
+    private long[] allocateBuffer(int bufferMB, long seed) {
+        int longs = (bufferMB * 1024 * 1024) / 8;
+        long[] buf = new long[longs];
+        long x = seed == 0L ? 0x9E3779B97F4A7C15L : seed;
+        for (int i = 0; i < longs; i++) {
+            x ^= (x << 13); x ^= (x >>> 7); x ^= (x << 17);
+            buf[i] = x;
+        }
+        return buf;
+    }
+
+    private String buildOverallSummary(String runName, String executorName) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("run=").append(runName).append('\n');
+        sb.append("executor=").append(executorName).append('\n');
+        sb.append("scope=overall\n");
+        sb.append("tasksRecorded=").append(latencyCollector.overall().recordedTasks()).append('\n');
+        sb.append(latencyCollector.overall().summary());
+        return sb.toString();
+    }
+
+    private String buildPhaseSummary(String runName, String executorName, int phaseId) {
+        long startNs = 0L;
+        for (int i = 0; i < phaseId; i++) {
+            startNs += entry.phases().get(i).durationSeconds() * 1_000_000_000L;
+        }
+        long endNs = startNs + entry.phases().get(phaseId).durationSeconds() * 1_000_000_000L;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("run=").append(runName).append('\n');
+        sb.append("executor=").append(executorName).append('\n');
+        sb.append("phase=").append(phaseId + 1).append('\n');
+        sb.append("tasksRecorded=").append(latencyCollector.forPhase(phaseId).recordedTasks()).append('\n');
+        sb.append(String.format("boundary.startSec=%.3f%n", startNs / 1_000_000_000.0));
+        sb.append(String.format("boundary.endSec=%.3f%n", endNs / 1_000_000_000.0));
+        sb.append(latencyCollector.forPhase(phaseId).summary());
+        return sb.toString();
+    }
+
+    /**
+     * Per-phase statistics record.
+     */
+    public static final class PhaseStatistics {
+        public final int phaseId;
+        public final int tasksSubmitted;
+        public final long elapsedNanos;
+        public final double measurementTimeSecs;
+
+        public PhaseStatistics(int phaseId, int tasksSubmitted, long elapsedNanos, double measurementTimeSecs) {
+            this.phaseId = phaseId;
+            this.tasksSubmitted = tasksSubmitted;
+            this.elapsedNanos = elapsedNanos;
+            this.measurementTimeSecs = measurementTimeSecs;
+        }
+
+        @Override
+        public String toString() {
+            return String.format("Phase[%d]: %d tasks in %.3fs (%.1f tasks/sec)",
+                    phaseId, tasksSubmitted, elapsedNanos / 1_000_000_000.0,
+                    tasksSubmitted / (elapsedNanos / 1_000_000_000.0));
+        }
+    }
+
+    private static final class PhasedLatencyCollector implements Task.CompletionObserver {
+        private final LatencyRecorder overall = new LatencyRecorder();
+        private final List<LatencyRecorder> perPhase = new ArrayList<>();
+
+        PhasedLatencyCollector(int phaseCount) {
+            for (int i = 0; i < phaseCount; i++) {
+                perPhase.add(new LatencyRecorder());
+            }
+        }
+
+        @Override
+        public synchronized void onTaskCompleted(Task task) {
+            if (!task.isMeasurement()) {
+                return;
+            }
+            long so = task.submitOverheadNanos();
+            long qw = task.queueWaitTimeNanos();
+            long ex = task.executionTimeNanos();
+            long e2e = task.endToEndLatencyNanos();
+            overall.recordRaw(so, qw, ex, e2e);
+            int phaseId = task.phaseId();
+            if (phaseId >= 0 && phaseId < perPhase.size()) {
+                perPhase.get(phaseId).recordRaw(so, qw, ex, e2e);
+            }
+        }
+
+        LatencyRecorder overall() {
+            return overall;
+        }
+
+        LatencyRecorder forPhase(int phaseId) {
+            return perPhase.get(phaseId);
+        }
+    }
+}

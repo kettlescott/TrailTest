@@ -27,6 +27,13 @@ public final class Task implements Runnable {
         void onTaskCompleted(Task task);
     }
 
+    /** Optional global sink for Hybrid CV sampling. */
+    public interface CompletionSampleSink {
+        void onTaskCompleted(Task task, String threadName);
+    }
+
+    private static volatile CompletionSampleSink completionSampleSink;
+
     private final long taskId;
     private final WorkloadKind workloadKind;
     private final long targetMillis;
@@ -41,6 +48,7 @@ public final class Task implements Runnable {
     private long startNanos;
     private long finishNanos;
     private long workloadResult;
+    private int phaseId;  // which phase this task belongs to (for phased workloads)
 
     /**
      * Shard-routing key. Defaults to {@link #taskId} so legacy behaviour
@@ -163,6 +171,7 @@ public final class Task implements Runnable {
                 _attrib.recordSample(taskId, workloadKind.ordinal(),
                         startNanos, finishNanos, _perfSampled);
             }
+            emitCompletionSampleIfEnabled();
             if (completionLatch != null) {
                 completionLatch.countDown();
             }
@@ -213,6 +222,8 @@ public final class Task implements Runnable {
                         startNanos, finishNanos, _perfSampled);
             }
 
+            emitCompletionSampleIfEnabled();
+
             // Diagnostics MUST be recorded before the latch + permit
             // release so the drain handshake in BenchmarkMain observes
             // a consistent (worker stats, semaphore) pair.
@@ -253,6 +264,9 @@ public final class Task implements Runnable {
     public long routingKey()          { return routingKey; }
     /** Set by {@link TaskGenerator} when shard-imbalance is active. Package-private. */
     void setRoutingKey(long key)      { this.routingKey = key; }
+    public int phaseId()              { return phaseId; }
+    /** Set by phased workload runner. Package-private. */
+    void setPhaseId(int phaseId)      { this.phaseId = phaseId; }
     public WorkloadKind workloadKind(){ return workloadKind; }
     public long targetMillis()        { return targetMillis; }
     public long createdNanos()        { return createdNanos; }
@@ -262,6 +276,21 @@ public final class Task implements Runnable {
     public long workloadResult()      { return workloadResult; }
     public boolean isMeasurement()    { return measurement; }
     public Workload workload()        { return workload; }
+
+    public static void setCompletionSampleSink(CompletionSampleSink sink) {
+        completionSampleSink = sink;
+    }
+
+    public static CompletionSampleSink completionSampleSink() {
+        return completionSampleSink;
+    }
+
+    private void emitCompletionSampleIfEnabled() {
+        CompletionSampleSink sink = completionSampleSink;
+        if (sink != null && measurement) {
+            sink.onTaskCompleted(this, Thread.currentThread().getName());
+        }
+    }
 
     private static double nsToMs(long ns) { return ns / 1_000_000.0; }
 

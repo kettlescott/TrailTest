@@ -321,31 +321,10 @@ public final class ShardedExecutor implements BenchmarkExecutor {
                 queues[i] = q;
             }
         }
+
     }
 
-    /* ================================================================
-     *  Submission
-     * ================================================================ */
-
     /**
-     * Routes the task to a shard using
-     * {@code Hashing.shardOf(task.routingKey(), workerCount, routing)}
-     * and enqueues it via {@link LinkedBlockingQueue#offer(Object)}.
-     *
-     * <p><b>Experiment 2 note.</b> Controlled sharded load imbalance is
-     * introduced by the <em>workload generator</em>
-     * ({@link TaskGenerator} with a {@link ShardImbalanceConfig}),
-     * which selects {@link Task#routingKey()} so that this real,
-     * unmodified routing function delivers the desired shard
-     * distribution. The executor itself is <em>never</em> given a
-     * pre-chosen destination queue — the causal chain
-     * <em>skewed keys → Hashing.shardOf → hot shard → fixed worker
-     * saturates</em> is preserved.
-     *
-     * <h3>Hot-path design</h3>
-     * <p>When {@link BenchmarkFlags#DEBUG} is {@code false} (default),
-     * submit performs only two operations: hash routing and queue offer.
-     * No task-list tracking, no object allocation beyond the queue node.
      * When DEBUG is {@code true}, each task is also added to an internal
      * list for diagnostic use via {@link #getTasks()}.
      */

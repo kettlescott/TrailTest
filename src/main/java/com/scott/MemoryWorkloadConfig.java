@@ -50,6 +50,28 @@ public record MemoryWorkloadConfig(
         return new MemoryWorkloadConfig(DEFAULT_PATTERN, DEFAULT_BUFFER_MB, DEFAULT_WRITE_BACK);
     }
 
+    @SuppressWarnings("unchecked")
+    public static MemoryWorkloadConfig fromMap(java.util.Map<String, Object> map) {
+        if (map == null) {
+            return defaults();
+        }
+        String patternStr = map.get("accessPattern") == null ? null
+                : String.valueOf(map.get("accessPattern")).toUpperCase();
+        MemoryBoundWorkload.AccessPattern pattern = patternStr == null
+                ? DEFAULT_PATTERN
+                : MemoryBoundWorkload.AccessPattern.valueOf(patternStr);
+        
+        Object bufMb = map.get("bufferMB");
+        int bufferMB = bufMb == null ? DEFAULT_BUFFER_MB
+                : Integer.parseInt(String.valueOf(bufMb));
+        
+        Object wb = map.get("writeBack");
+        boolean writeBack = wb == null ? DEFAULT_WRITE_BACK
+                : Boolean.parseBoolean(String.valueOf(wb));
+        
+        return new MemoryWorkloadConfig(pattern, bufferMB, writeBack);
+    }
+
     public MemoryWorkloadConfig {
         if (accessPattern == null) {
             accessPattern = DEFAULT_PATTERN;

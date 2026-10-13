@@ -11,6 +11,7 @@ public record RootConfig(
         DynamicHybridConfig dynamicHybrid,
         DiagnosticsConfig diagnostics,
         AttributionConfig attribution,
+        Map<String, PhasedWorkloadEntry> hybridworkloads,
         List<RunConfig> runs
 ) {
     /** Returns diagnostics config, never null (disabled when YAML omits it). */
@@ -27,10 +28,22 @@ public record RootConfig(
         }
         global.validate();
 
-        if (workloads == null || workloads.isEmpty()) {
-            throw new IllegalArgumentException("workloads section is required and must not be empty");
+        boolean hybridMode = global.hybrid();
+        if (hybridMode) {
+            if (hybridworkloads == null || hybridworkloads.isEmpty()) {
+                throw new IllegalArgumentException("hybridworkloads section is required when global.hybrid=true");
+            }
+            for (Map.Entry<String, PhasedWorkloadEntry> entry : hybridworkloads.entrySet()) {
+                if (entry.getValue() == null) {
+                    throw new IllegalArgumentException("hybridworkloads." + entry.getKey() + " must not be null");
+                }
+            }
+        } else {
+            if (workloads == null || workloads.isEmpty()) {
+                throw new IllegalArgumentException("workloads section is required and must not be empty");
+            }
+            workloads.forEach((name, cfg) -> cfg.validate(name));
         }
-        workloads.forEach((name, cfg) -> cfg.validate(name));
 
         if (profiling != null) {
             profiling.validate();
@@ -46,13 +59,19 @@ public record RootConfig(
 
         for (RunConfig run : runs) {
             run.validate();
-            if (!workloads.containsKey(run.workload())) {
-                throw new IllegalArgumentException("Run '" + run.name() + "' references unknown workload '" + run.workload() + "'");
+            if (hybridMode) {
+                PhasedWorkloadEntry phased = hybridworkloads == null ? null : hybridworkloads.get(run.workload());
+                if (phased == null) {
+                    throw new IllegalArgumentException(
+                            "Run '" + run.name() + "' references unknown hybrid workload '" + run.workload() + "'");
+                }
+            } else if (!workloads.containsKey(run.workload())) {
+                throw new IllegalArgumentException(
+                        "Run '" + run.name() + "' references unknown workload '" + run.workload() + "'");
             }
+
             BenchmarkMode m = BenchmarkMode.fromConfigValue(run.mode());
-            // Hybrid runs MUST have an effective HybridConfig (either per-run
-            // override or the top-level one). No implicit defaults.
-            if (m == BenchmarkMode.HYBRID) {
+            if (!hybridMode && m == BenchmarkMode.HYBRID) {
                 HybridConfig effective = run.hybrid() != null ? run.hybrid() : hybrid;
                 if (effective == null) {
                     throw new IllegalArgumentException(
@@ -63,7 +82,6 @@ public record RootConfig(
                 }
                 effective.validate();
             }
-            // Dynamic Hybrid runs MUST have a top-level 'dynamicHybrid:' block.
             if (m == BenchmarkMode.DYNAMIC_HYBRID) {
                 if (dynamicHybrid == null) {
                     throw new IllegalArgumentException(

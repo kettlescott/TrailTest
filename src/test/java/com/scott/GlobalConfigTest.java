@@ -26,7 +26,8 @@ class GlobalConfigTest {
             BlackholeMode.SHARED_VOLATILE,
             false,        // retainCompletedTasks
             1,            // sharedQueueCount
-            null          // shardImbalance
+            null,         // shardImbalance
+            false         // hybrid
         );
     }
 
@@ -44,7 +45,7 @@ class GlobalConfigTest {
             0, 32, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -56,7 +57,7 @@ class GlobalConfigTest {
             -1, 32, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -68,7 +69,7 @@ class GlobalConfigTest {
             32, 0, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -80,7 +81,7 @@ class GlobalConfigTest {
             32, -5, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -92,7 +93,7 @@ class GlobalConfigTest {
             32, 32, 123L, -1, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -104,7 +105,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertDoesNotThrow(config::validate);
     }
@@ -116,7 +117,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, 0, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -128,7 +129,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, -10, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -140,7 +141,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, 60, 0,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertDoesNotThrow(config::validate);
     }
@@ -152,7 +153,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, 60, -1,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -164,7 +165,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, 60, 1000,
             null,  // shardedRouting
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -176,7 +177,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             null,  // workloadSeedMode
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -189,7 +190,7 @@ class GlobalConfigTest {
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
             0L, null,  // blackholeMode
-            false, 1, null);
+            false, 1, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -201,7 +202,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 0, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 0, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -213,7 +214,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, -1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, -1, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -225,7 +226,7 @@ class GlobalConfigTest {
             8, 32, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 8, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 8, null, false);
         
         assertDoesNotThrow(config::validate);
     }
@@ -237,7 +238,7 @@ class GlobalConfigTest {
             8, 32, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 9, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 9, null, false);
         
         assertThrows(IllegalArgumentException.class, config::validate);
     }
@@ -249,7 +250,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertDoesNotThrow(config::validate);
     }
@@ -262,7 +263,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, imbalance);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, imbalance, false);
         
         assertDoesNotThrow(config::validate);
     }
@@ -275,7 +276,7 @@ class GlobalConfigTest {
                 32, 32, 123L, 0, 60, 1000,
                 ShardedRoutingConfig.defaults(),
                 mode,
-                0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+                0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
             
             assertDoesNotThrow(config::validate);
         }
@@ -289,7 +290,7 @@ class GlobalConfigTest {
                 32, 32, 123L, 0, 60, 1000,
                 ShardedRoutingConfig.defaults(),
                 WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-                0L, mode, false, 1, null);
+                0L, mode, false, 1, null, false);
             
             assertDoesNotThrow(config::validate);
         }
@@ -302,7 +303,7 @@ class GlobalConfigTest {
             256, 256, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 256, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 256, null, false);
         
         assertDoesNotThrow(config::validate);
     }
@@ -314,7 +315,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, 60, Integer.MAX_VALUE,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 1, null, false);
         
         assertDoesNotThrow(config::validate);
     }
@@ -326,7 +327,7 @@ class GlobalConfigTest {
             32, 32, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, true, 1, null);
+            0L, BlackholeMode.SHARED_VOLATILE, true, 1, null, false);
         
         assertDoesNotThrow(config::validate);
     }
@@ -357,7 +358,7 @@ class GlobalConfigTest {
             16, 16, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 16, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 16, null, false);
         
         assertDoesNotThrow(config::validate);
     }
@@ -369,7 +370,7 @@ class GlobalConfigTest {
             8, 1000, 123L, 0, 60, 1000,
             ShardedRoutingConfig.defaults(),
             WorkloadSeedMode.SEQUENTIAL_TASK_ID,
-            0L, BlackholeMode.SHARED_VOLATILE, false, 8, null);
+            0L, BlackholeMode.SHARED_VOLATILE, false, 8, null, false);
         
         assertDoesNotThrow(config::validate);
     }

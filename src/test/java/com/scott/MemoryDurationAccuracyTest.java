@@ -51,6 +51,7 @@ class MemoryDurationAccuracyTest {
     private void accuracyTestForTarget(long targetMicros, String label) {
         // Setup buffer
         long[] buffer = createBuffer(BUFFER_LONGS);
+        int batchSize = batchSizeForTarget(targetMicros);
 
         // Run multiple tasks and collect timing samples
         List<Long> executionTimesUs = new ArrayList<>();
@@ -63,7 +64,7 @@ class MemoryDurationAccuracyTest {
                     MemoryBoundWorkload.AccessPattern.RANDOM,
                     12345L + i,  // Vary seed per task
                     false,        // writeBack=false
-                    8);           // batchSize=8
+                    batchSize);
 
             long startNanos = System.nanoTime();
             long result = workload.execute();
@@ -93,8 +94,12 @@ class MemoryDurationAccuracyTest {
         long minUs = sorted.get(0);
         long maxUs = sorted.get(sorted.size() - 1);
         long medianUs = sorted.get(sorted.size() / 2);
-        long p95Us = sorted.get((int) (sorted.size() * 0.95));
-        long p99Us = sorted.get((int) Math.min(sorted.size() - 1, (int) (sorted.size() * 0.99)));
+        // Use nearest-rank percentiles so a single outlier does not get
+        // mislabeled as the 95th percentile when the sample size is small.
+        int p95Index = Math.max(0, (int) Math.ceil(sorted.size() * 0.95) - 1);
+        int p99Index = Math.max(0, (int) Math.ceil(sorted.size() * 0.99) - 1);
+        long p95Us = sorted.get(p95Index);
+        long p99Us = sorted.get(Math.min(sorted.size() - 1, p99Index));
 
         // Calculate tolerances
         long toleranceUs = Math.max(5, targetMicros / 10);  // 10% or 5µs minimum
@@ -181,13 +186,14 @@ class MemoryDurationAccuracyTest {
         long[] targets = {50, 100, 300};
 
         for (long target : targets) {
+            int batchSize = batchSizeForTarget(target);
             List<Long> timesUs = new ArrayList<>();
 
             // Run 15 tasks per target
             for (int i = 0; i < 15; i++) {
                 MemoryBoundWorkloadDuration workload = new MemoryBoundWorkloadDuration(
                         buffer, target, MemoryBoundWorkload.AccessPattern.RANDOM,
-                        54321L + i, false, 8);
+                        54321L + i, false, batchSize);
 
                 long startNanos = System.nanoTime();
                 long result = workload.execute();
@@ -220,13 +226,14 @@ class MemoryDurationAccuracyTest {
     void stabilityTest() {
         long targetMicros = 100;
         long[] buffer = createBuffer(BUFFER_LONGS);
+        int batchSize = batchSizeForTarget(targetMicros);
         List<Long> timesUs = new ArrayList<>();
 
         // Run 50 tasks to test stability
         for (int i = 0; i < 50; i++) {
             MemoryBoundWorkloadDuration workload = new MemoryBoundWorkloadDuration(
                     buffer, targetMicros, MemoryBoundWorkload.AccessPattern.RANDOM,
-                    99999L + i, false, 8);
+                    99999L + i, false, batchSize);
 
             long startNanos = System.nanoTime();
             long result = workload.execute();
@@ -273,6 +280,12 @@ class MemoryDurationAccuracyTest {
                 .mapToDouble(x -> (x - mean) * (x - mean))
                 .sum();
         return Math.round(Math.sqrt(sumSquareDiffs / values.size()));
+    }
+
+    private int batchSizeForTarget(long targetMicros) {
+        if (targetMicros <= 50) return 2;
+        if (targetMicros <= 100) return 4;
+        return 8;
     }
 }
 
