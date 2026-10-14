@@ -92,7 +92,7 @@ public class BenchmarkMain {
 
     public static void main(String[] args) throws Exception {
         Path configPath = parseConfigPath(args);
-//        Path configPath = Paths.get("/Users/wangs100/dev/multiqueue/TrailTest/hybrid/cpu/50us/benchmarks_hybrid_cpu_100us.yaml");
+//        Path configPath = Paths.get("/Users/wangs100/dev/multiqueue/TrailTest/hybrid/cpu/50us/benchmarks_hybrid_memory_100us.yaml");
         RootConfig root = BenchmarkConfigLoader.load(configPath);
         root = applyCliOverrides(root, args);
         root.validate();

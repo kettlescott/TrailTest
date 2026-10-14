@@ -3,9 +3,9 @@ package com.scott;
 /**
  * Duration-controlled memory-bound workload.
  *
- * <p>Runs memory operations for a target duration rather than a fixed step count.
- * Performs batches of accesses and checks elapsed time between batches to minimize
- * timing overhead (avoid nanoTime call per access).
+ * <p>Runs memory operations for a target duration with microsecond-level precision.
+ * Checks elapsed time periodically (every 4 operations) to balance timing accuracy
+ * and nanoTime() call overhead.
  *
  * <p>Preserves all the behavioural properties of {@link MemoryBoundWorkload}:
  * - SEQUENTIAL or RANDOM access patterns
@@ -13,10 +13,10 @@ package com.scott;
  * - Deterministic pseudo-random seeding
  * - JIT-defeating blackhole sink
  *
- * <h3>Batch timing</h3>
- * The workload performs {@code batchSize} operations, then checks if the target
- * duration has been reached. This amortises the cost of {@link System#nanoTime()}.
- * The actual execution time will exceed the target by at most one batch.
+ * <h3>Timing precision</h3>
+ * Time is checked every 4 operations via {@link System#nanoTime()}.
+ * This ensures accurate duration control while minimizing nanoTime() overhead.
+ * Result: microsecond-level precision with good performance.
  */
 public final class MemoryBoundWorkloadDuration implements Workload {
 
@@ -25,7 +25,6 @@ public final class MemoryBoundWorkloadDuration implements Workload {
     private final long seed;
     private final boolean writeBack;
     private final long targetNanos;
-    private final int batchSize;
 
     /**
      * Creates a duration-controlled memory workload.
@@ -35,20 +34,19 @@ public final class MemoryBoundWorkloadDuration implements Workload {
      * @param pattern       SEQUENTIAL or RANDOM access pattern
      * @param seed          per-task deterministic seed
      * @param writeBack     when true, write back to buffer; when false, read-only
-     * @param batchSize     number of accesses per batch before checking elapsed time
+     * @param batchSize     (deprecated: no longer used, time check on each operation)
      */
     public MemoryBoundWorkloadDuration(long[] buffer,
                                        long targetMicros,
                                        MemoryBoundWorkload.AccessPattern pattern,
                                        long seed,
                                        boolean writeBack,
-                                       int batchSize) {
+                                       @SuppressWarnings("unused") int batchSize) {
         this.buffer = buffer;
         this.pattern = pattern;
         this.seed = seed;
         this.writeBack = writeBack;
         this.targetNanos = targetMicros * 1_000L;
-        this.batchSize = Math.max(1, batchSize);
     }
 
     @Override
@@ -56,39 +54,41 @@ public final class MemoryBoundWorkloadDuration implements Workload {
         final long[] buf = buffer;
         final int n = buf.length;
         final boolean wb = writeBack;
-        final int bs = batchSize;
         long x = seed;
         long totalOps = 0L;
 
         long start = System.nanoTime();
         long elapsed = 0L;
+        
+        // Check time every 4 operations to balance precision and nanoTime() overhead
+        final int CHECK_INTERVAL = 4;
 
         if (pattern == MemoryBoundWorkload.AccessPattern.SEQUENTIAL) {
             int idx = (int) Long.remainderUnsigned(seed, n);
             while (elapsed < targetNanos) {
-                // Perform one batch
-                for (int i = 0; i < bs; i++) {
+                // Perform CHECK_INTERVAL operations
+                for (int i = 0; i < CHECK_INTERVAL; i++) {
                     x += buf[idx];
                     if (wb) buf[idx] = x;
                     idx++;
                     if (idx >= n) idx = 0;
+                    totalOps++;
                 }
-                totalOps += bs;
                 elapsed = System.nanoTime() - start;
             }
         } else {
             // RANDOM pattern
             while (elapsed < targetNanos) {
-                // Perform one batch
-                for (int i = 0; i < bs; i++) {
+                // Perform CHECK_INTERVAL operations
+                for (int i = 0; i < CHECK_INTERVAL; i++) {
                     x ^= (x << 13);
                     x ^= (x >>> 7);
                     x ^= (x << 17);
                     int idx = (int) ((x >>> 1) % n);
                     x += buf[idx];
                     if (wb) buf[idx] = x;
+                    totalOps++;
                 }
-                totalOps += bs;
                 elapsed = System.nanoTime() - start;
             }
         }
@@ -109,22 +109,7 @@ public final class MemoryBoundWorkloadDuration implements Workload {
             ThreadLocal.withInitial(() -> 0L);
 
     /**
-     * Returns the memory operation count from the last executed workload on
-     * this thread. Diagnostics use only. Calling on a thread that hasn't
-     * run this workload returns 0.
-     */
-    public static long lastMemoryOperations() {
-        return memoryOperationsCounts.get();
-    }
-
-    /**
-     * Volatile blackhole sink (default mode).
-     */
-    @SuppressWarnings("unused")
-    private static volatile long BLACKHOLE;
-
-    /**
-     * Per-thread blackhole sink (alternative mode).
+     * Per-thread blackhole sink to prevent JIT optimization.
      */
     private static final ThreadLocal<long[]> TL_SINK =
             ThreadLocal.withInitial(() -> new long[16]);

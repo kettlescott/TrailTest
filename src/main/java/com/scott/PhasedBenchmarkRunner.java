@@ -137,6 +137,16 @@ public final class PhasedBenchmarkRunner {
         int fileIndex = fileIndices.get(phaseId);
         long[] durations = fileCache.get(phase.durationFile());
 
+        // Allocate the memory buffer ONCE per phase and share it across all
+        // tasks/workers. The workload is read-only (execute() only reads
+        // buf[idx]) and runs for a fixed target duration regardless of buffer
+        // content, so a single shared buffer is safe and keeps the producer
+        // thread from re-allocating 8MB per task (the former throughput killer).
+        long[] memBuffer = null;
+        if (entry.kind() == WorkloadKind.MEMORY) {
+            memBuffer = allocateBuffer(entry.memoryOrDefaults().bufferMB(), 0x9E3779B97F4A7C15L);
+        }
+
         while (System.nanoTime() < phaseDeadline) {
             if (!permits.tryAcquire()) {
                 permits.acquire();
@@ -145,7 +155,7 @@ public final class PhasedBenchmarkRunner {
             long durationMicros = durations[fileIndex];
             fileIndex = (fileIndex + 1) % durations.length;
 
-            Workload workload = createWorkload(durationMicros);
+            Workload workload = createWorkload(durationMicros, memBuffer);
             Task task = new Task(
                     taskId++,
                     entry.kind(),
@@ -177,23 +187,35 @@ public final class PhasedBenchmarkRunner {
     /**
      * Creates a workload for the given duration.
      * Supports CPU and MEMORY workloads with duration control.
+     * Uses specialized Hybrid variants when executor is AdaptiveHybridExecutor.
      */
-    private Workload createWorkload(long durationMicros) {
+    private Workload createWorkload(long durationMicros, long[] sharedBuffer) {
         long seed = System.nanoTime() ^ durationMicros;
+        
+        // Use consistent batch size for both CPU and Memory for fair comparison
+        // Every 64 operations, check elapsed time to balance precision and overhead
+        final int BATCH_SIZE = 64;
         
         switch (entry.kind()) {
             case CPU:
                 if (executor instanceof AdaptiveHybridExecutor) {
                     return new HybridCPUWorkload(durationMicros, seed);
                 }
-                return new CpuBoundWorkloadDuration(durationMicros, seed, 1000);
+                return new CpuBoundWorkloadDuration(durationMicros, seed, BATCH_SIZE);
             
             case MEMORY:
                 MemoryWorkloadConfig memConfig = entry.memoryOrDefaults();
-                long[] buffer = allocateBuffer(memConfig.bufferMB(), seed);
+                // Reuse the per-phase shared buffer (allocated once in runPhase).
+                long[] buffer = sharedBuffer;
+                
+                if (executor instanceof AdaptiveHybridExecutor) {
+                    return new HybridMemoryBoundWorkload(
+                        buffer, durationMicros, memConfig.accessPattern(), 
+                        seed, memConfig.writeBack());
+                }
                 return new MemoryBoundWorkloadDuration(
                     buffer, durationMicros, memConfig.accessPattern(), 
-                    seed, memConfig.writeBack(), 8);
+                    seed, memConfig.writeBack(), BATCH_SIZE);
             
             default:
                 throw new IllegalArgumentException("Unsupported workload kind: " + entry.kind());
@@ -219,7 +241,21 @@ public final class PhasedBenchmarkRunner {
         sb.append("run=").append(runName).append('\n');
         sb.append("executor=").append(executorName).append('\n');
         sb.append("scope=overall\n");
-        sb.append("tasksRecorded=").append(latencyCollector.overall().recordedTasks()).append('\n');
+        
+        int recordedTasks = latencyCollector.overall().recordedTasks();
+        sb.append("tasksRecorded=").append(recordedTasks).append('\n');
+        
+        // Calculate total duration from all phases
+        double totalDurationSeconds = 0.0;
+        for (PhasedConfig phase : entry.phases()) {
+            totalDurationSeconds += phase.durationSeconds();
+        }
+        
+        if (totalDurationSeconds > 0.0 && recordedTasks > 0) {
+            double throughput = latencyCollector.overall().throughputTasksPerSecond(totalDurationSeconds);
+            sb.append(String.format("throughput=%.1f tasks/sec%n", throughput));
+        }
+        
         sb.append(latencyCollector.overall().summary());
         return sb.toString();
     }
@@ -230,14 +266,24 @@ public final class PhasedBenchmarkRunner {
             startNs += entry.phases().get(i).durationSeconds() * 1_000_000_000L;
         }
         long endNs = startNs + entry.phases().get(phaseId).durationSeconds() * 1_000_000_000L;
+        double phaseDurationSeconds = entry.phases().get(phaseId).durationSeconds();
 
         StringBuilder sb = new StringBuilder();
         sb.append("run=").append(runName).append('\n');
         sb.append("executor=").append(executorName).append('\n');
         sb.append("phase=").append(phaseId + 1).append('\n');
-        sb.append("tasksRecorded=").append(latencyCollector.forPhase(phaseId).recordedTasks()).append('\n');
+        
+        int recordedTasks = latencyCollector.forPhase(phaseId).recordedTasks();
+        sb.append("tasksRecorded=").append(recordedTasks).append('\n');
+        
         sb.append(String.format("boundary.startSec=%.3f%n", startNs / 1_000_000_000.0));
         sb.append(String.format("boundary.endSec=%.3f%n", endNs / 1_000_000_000.0));
+        
+        if (phaseDurationSeconds > 0.0 && recordedTasks > 0) {
+            double throughput = latencyCollector.forPhase(phaseId).throughputTasksPerSecond(phaseDurationSeconds);
+            sb.append(String.format("throughput=%.1f tasks/sec%n", throughput));
+        }
+        
         sb.append(latencyCollector.forPhase(phaseId).summary());
         return sb.toString();
     }

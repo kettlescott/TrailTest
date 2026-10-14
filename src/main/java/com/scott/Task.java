@@ -171,7 +171,14 @@ public final class Task implements Runnable {
                 _attrib.recordSample(taskId, workloadKind.ordinal(),
                         startNanos, finishNanos, _perfSampled);
             }
-            emitCompletionSampleIfEnabled();
+            try {
+                emitCompletionSampleIfEnabled();
+            } catch (Throwable sinkError) {
+                // The CV sample sink must never prevent completion
+                // bookkeeping (latch/permit); otherwise in-flight
+                // permits leak and the producer eventually hangs.
+                System.err.println("[Task] completion sample sink failed: " + sinkError);
+            }
             if (completionLatch != null) {
                 completionLatch.countDown();
             }

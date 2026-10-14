@@ -220,6 +220,13 @@ public final class UnifiedHybridWorkerPool {
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
+                } catch (Throwable t) {
+                    // A single bad task (e.g. workload exception, sink NPE)
+                    // must NOT kill this worker. If a worker died, the shared
+                    // queue would stop draining and the producer's
+                    // permits.acquire() would block forever -> hang.
+                    System.err.printf("[Hybrid] worker %d caught %s: %s (continuing)%n",
+                            workerID, t.getClass().getSimpleName(), t.getMessage());
                 }
             }
         }

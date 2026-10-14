@@ -224,5 +224,17 @@ public final class LatencyRecorder {
                 p99 / 1_000_000.0,
                 maxNanos / 1_000_000.0);
     }
+
+    /**
+     * Calculates throughput given a duration in seconds.
+     * @param durationSeconds elapsed time during measurement
+     * @return tasks per second
+     */
+    public double throughputTasksPerSecond(double durationSeconds) {
+        if (durationSeconds <= 0.0) {
+            return 0.0;
+        }
+        return recordedTasks() / durationSeconds;
+    }
 }
 
