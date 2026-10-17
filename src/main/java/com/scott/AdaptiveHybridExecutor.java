@@ -38,8 +38,11 @@ public final class AdaptiveHybridExecutor implements BenchmarkExecutor {
     private final CVMonitorThread monitorThread;
     private final AtomicReference<ExecutorState> currentState;
 
+    private static final long STATS_DWELL_NANOS = TimeUnit.SECONDS.toNanos(3);
+
     private volatile boolean shutdown = false;
     private long measurementStartNanos;
+    private volatile long statsStableAfterNanos;
 
     public AdaptiveHybridExecutor(int workerCount, AdaptiveHybridConfig config) {
         if (config == null) {
@@ -73,6 +76,7 @@ public final class AdaptiveHybridExecutor implements BenchmarkExecutor {
 
         // Create monitor thread
         this.measurementStartNanos = System.nanoTime();
+        this.statsStableAfterNanos = this.measurementStartNanos;
         this.monitorThread = new CVMonitorThread(
                 sampleBuffers,
                 config,
@@ -89,6 +93,7 @@ public final class AdaptiveHybridExecutor implements BenchmarkExecutor {
      */
     public void markMeasurementStart() {
         this.measurementStartNanos = System.nanoTime();
+        this.statsStableAfterNanos = this.measurementStartNanos;
         System.out.printf("[Hybrid] start monitoring: initialMode=%s, metric=CV, "
                 + "sharedEnterCv=%.3f, shardedEnterCv=%.3f, windowMillis=%d, debugCvPrint=%ds%n",
                 currentState.get().displayName(),
@@ -131,6 +136,8 @@ public final class AdaptiveHybridExecutor implements BenchmarkExecutor {
      */
     private void onSwitchRequested(ExecutorState from, ExecutorState to,
                                    double metric, long mean, long sampleCount) {
+        // Temporarily suppress metric recording during active transition.
+        this.statsStableAfterNanos = Long.MAX_VALUE;
         long transitionStartNanos = System.nanoTime();
         double transitionStartSecs = (transitionStartNanos - measurementStartNanos) / 1_000_000_000.0;
         String fromMode = from == ExecutorState.SHARED ? "shared" : "sharded";
@@ -166,6 +173,8 @@ public final class AdaptiveHybridExecutor implements BenchmarkExecutor {
         currentState.set(to);
 
         long transitionEndNanos = System.nanoTime();
+        // Wait briefly after handoff so summaries capture only stable mode behavior.
+        this.statsStableAfterNanos = transitionEndNanos + STATS_DWELL_NANOS;
         double transitionEndSecs = (transitionEndNanos - measurementStartNanos) / 1_000_000_000.0;
         long transitionTimeMs = (transitionEndNanos - transitionStartNanos) / 1_000_000L;
 
@@ -221,6 +230,29 @@ public final class AdaptiveHybridExecutor implements BenchmarkExecutor {
      */
     public CVMonitorThread getMonitorThread() {
         return monitorThread;
+    }
+
+    /**
+     * Returns true when a completed measurement task is considered stable enough
+     * for phase summaries (outside transition and after short post-switch dwell).
+     */
+    public boolean shouldRecordStableMeasurement(Task task) {
+        if (task == null || !task.isMeasurement()) {
+            return false;
+        }
+
+        ExecutorState state = currentState.get();
+        if (!state.isStable()) {
+            return false;
+        }
+        if (task.finishNanos() < statsStableAfterNanos) {
+            return false;
+        }
+
+        if (state == ExecutorState.SHARED) {
+            return workerPool.areAllShardsEmpty();
+        }
+        return workerPool.isSharedQueueEmpty();
     }
 
     /**

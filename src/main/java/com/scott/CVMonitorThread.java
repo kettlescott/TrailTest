@@ -114,7 +114,7 @@ public final class CVMonitorThread extends Thread {
             double shardEnterCv = config.shardedEnterCv();
             boolean closeHybrid = sharedEnterCv == 0 && shardEnterCv == 0;
             if (closeHybrid) {
-                System.out.println("Shutdown hybrid");
+                System.out.println("[Hybrid] Shutdown hybrid");
             }
             while (!stopRequested.get()) {
                 long checkStartNanos = System.nanoTime();

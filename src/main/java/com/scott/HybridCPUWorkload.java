@@ -44,15 +44,18 @@ public final class HybridCPUWorkload implements Workload {
         long start = System.nanoTime();
         long elapsed = 0L;
         long counter = 0L;
+        final int bs = 64;
 
         // Precise timing - check elapsed time after each operation
         while (elapsed < targetNanos) {
-            x ^= (x << 13);
-            x ^= (x >>> 7);
-            x ^= (x << 17);
-            x = x * 0x9E3779B97F4A7C15L + counter;
-            counter++;
 
+            for (int i = 0; i < bs; i++) {
+                x ^= (x << 13);
+                x ^= (x >>> 7);
+                x ^= (x << 17);
+                x = x * 0x9E3779B97F4A7C15L + counter;
+                counter++;
+            }
             elapsed = System.nanoTime() - start;
         }
 

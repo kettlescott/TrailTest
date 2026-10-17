@@ -172,6 +172,25 @@ public final class UnifiedHybridWorkerPool {
     }
 
     /**
+     * Returns true when the shared queue has no pending tasks.
+     */
+    public boolean isSharedQueueEmpty() {
+        return sharedQueue.isEmpty();
+    }
+
+    /**
+     * Returns true when all shard queues are empty.
+     */
+    public boolean areAllShardsEmpty() {
+        for (LinkedBlockingQueue<Task> queue : shardedQueues) {
+            if (!queue.isEmpty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Individual worker handling both shared and sharded consumption.
      */
     private static class UnifiedWorker implements Runnable {
@@ -192,6 +211,13 @@ public final class UnifiedHybridWorkerPool {
         }
 
         void setTransitionPending(boolean pending) {
+            if (pending) {
+                // Always start a transition with a clean drain flag. A stale
+                // "true" left over from a previous transition would make the
+                // next performTransition believe this worker is already
+                // drained and skip it — stranding tasks in the old queue.
+                this.drained = false;
+            }
             this.transitionPending = pending;
             if (!pending) {
                 this.drained = false;  // Reset drained flag when transition ends
@@ -220,13 +246,6 @@ public final class UnifiedHybridWorkerPool {
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
-                } catch (Throwable t) {
-                    // A single bad task (e.g. workload exception, sink NPE)
-                    // must NOT kill this worker. If a worker died, the shared
-                    // queue would stop draining and the producer's
-                    // permits.acquire() would block forever -> hang.
-                    System.err.printf("[Hybrid] worker %d caught %s: %s (continuing)%n",
-                            workerID, t.getClass().getSimpleName(), t.getMessage());
                 }
             }
         }
@@ -252,20 +271,34 @@ public final class UnifiedHybridWorkerPool {
 
         private void consumeByState(ExecutorState state) throws InterruptedException {
             if (state == ExecutorState.SHARED || state == ExecutorState.TO_SHARED) {
-                // Poll from shared queue
+                // Primary: shared queue.
                 Task task = sharedQueue.poll(10, TimeUnit.MILLISECONDS);
                 if (task != null) {
                     task.run();
+                } else {
+                    // Safety net: shared queue was momentarily empty. Drain any
+                    // task that may have been left in this worker's shard by an
+                    // imperfect SHARDED->SHARED handoff. In steady state the
+                    // shard is empty, so this is a cheap non-blocking poll.
+                    Task leftover = shardedQueues[workerID].poll();
+                    if (leftover != null) {
+                        leftover.run();
+                    }
                 }
             } else if (state == ExecutorState.SHARDED || state == ExecutorState.TO_SHARDED) {
-                // Poll from sharded queue
+                // Primary: this worker's shard.
                 Task task = shardedQueues[workerID].poll(10, TimeUnit.MILLISECONDS);
                 if (task != null) {
                     task.run();
+                } else {
+                    // Safety net: drain any task left in the shared queue by an
+                    // imperfect SHARED->SHARDED handoff. Steady state: empty.
+                    Task leftover = sharedQueue.poll();
+                    if (leftover != null) {
+                        leftover.run();
+                    }
                 }
             }
         }
     }
 }
-
-

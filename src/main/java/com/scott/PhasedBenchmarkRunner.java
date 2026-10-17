@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
+import java.util.function.Predicate;
 
 /**
  * Runner for phased benchmark workloads.
@@ -28,6 +29,7 @@ public final class PhasedBenchmarkRunner {
     private Map<String, long[]> fileCache;  // durationFile -> array of micros
     private List<Integer> fileIndices;       // current index per phase
     private PhasedLatencyCollector latencyCollector;
+    private Predicate<Task> measurementGate = task -> true;
 
     public PhasedBenchmarkRunner(PhasedWorkloadEntry entry,
                                  BenchmarkExecutor executor,
@@ -83,11 +85,14 @@ public final class PhasedBenchmarkRunner {
 
         if (executor instanceof AdaptiveHybridExecutor ahe) {
             ahe.markMeasurementStart();
+            measurementGate = ahe::shouldRecordStableMeasurement;
+        } else {
+            measurementGate = task -> true;
         }
 
         long measurementStartNanos = System.nanoTime();
         List<PhaseStatistics> phaseStats = new ArrayList<>();
-        latencyCollector = new PhasedLatencyCollector(entry.phases().size());
+        latencyCollector = new PhasedLatencyCollector(entry.phases().size(), measurementGate);
         fileIndices = new ArrayList<>();
         for (int i = 0; i < entry.phases().size(); i++) {
             fileIndices.add(0);
@@ -315,8 +320,10 @@ public final class PhasedBenchmarkRunner {
     private static final class PhasedLatencyCollector implements Task.CompletionObserver {
         private final LatencyRecorder overall = new LatencyRecorder();
         private final List<LatencyRecorder> perPhase = new ArrayList<>();
+        private final Predicate<Task> measurementGate;
 
-        PhasedLatencyCollector(int phaseCount) {
+        PhasedLatencyCollector(int phaseCount, Predicate<Task> measurementGate) {
+            this.measurementGate = measurementGate == null ? task -> true : measurementGate;
             for (int i = 0; i < phaseCount; i++) {
                 perPhase.add(new LatencyRecorder());
             }
@@ -325,6 +332,9 @@ public final class PhasedBenchmarkRunner {
         @Override
         public synchronized void onTaskCompleted(Task task) {
             if (!task.isMeasurement()) {
+                return;
+            }
+            if (!measurementGate.test(task)) {
                 return;
             }
             long so = task.submitOverheadNanos();
