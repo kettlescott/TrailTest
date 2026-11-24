@@ -262,6 +262,7 @@ public final class PhasedBenchmarkRunner {
         }
         
         sb.append(latencyCollector.overall().summary());
+        if (executor instanceof AdaptiveHybridExecutor ahe) ahe.appendSwitchOverheadSummary(sb);
         return sb.toString();
     }
 

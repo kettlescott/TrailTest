@@ -40,6 +40,8 @@ public final class AdaptiveHybridExecutor implements BenchmarkExecutor {
 
     private static final long STATS_DWELL_NANOS = TimeUnit.SECONDS.toNanos(3);
 
+    private final java.util.List<Long> switchNanos = new java.util.ArrayList<>();
+
     private volatile boolean shutdown = false;
     private long measurementStartNanos;
     private volatile long statsStableAfterNanos;
@@ -162,6 +164,7 @@ public final class AdaptiveHybridExecutor implements BenchmarkExecutor {
                 sampleCount
         );
 
+        long switchStartNanos = System.nanoTime();
         // Set transitional state
         ExecutorState transState = (to == ExecutorState.SHARED) ? ExecutorState.TO_SHARED : ExecutorState.TO_SHARDED;
         currentState.set(transState);
@@ -173,6 +176,9 @@ public final class AdaptiveHybridExecutor implements BenchmarkExecutor {
         currentState.set(to);
 
         long transitionEndNanos = System.nanoTime();
+        synchronized (switchNanos) {
+            switchNanos.add(transitionEndNanos - switchStartNanos);
+        }
         // Wait briefly after handoff so summaries capture only stable mode behavior.
         this.statsStableAfterNanos = transitionEndNanos + STATS_DWELL_NANOS;
         double transitionEndSecs = (transitionEndNanos - measurementStartNanos) / 1_000_000_000.0;
@@ -184,6 +190,20 @@ public final class AdaptiveHybridExecutor implements BenchmarkExecutor {
                 toMode,
                 transitionTimeMs
         );
+    }
+
+    public void appendSwitchOverheadSummary(StringBuilder sb) {
+        long[] s;
+        synchronized (switchNanos) {
+            s = switchNanos.stream().mapToLong(Long::longValue).sorted().toArray();
+        }
+        int n = s.length;
+        sb.append("switch.count=").append(n)
+          .append("\nswitch.overheadUs.avg=").append(n == 0 ? 0.0 : java.util.Arrays.stream(s).average().getAsDouble() / 1e3)
+          .append("\nswitch.overheadUs.min=").append(n == 0 ? 0.0 : s[0] / 1e3)
+          .append("\nswitch.overheadUs.max=").append(n == 0 ? 0.0 : s[n - 1] / 1e3)
+          .append("\nswitch.overheadUs.p99=").append(n == 0 ? 0.0 : s[(int) Math.ceil(n * 0.99) - 1] / 1e3)
+          .append('\n');
     }
 
     @Override
